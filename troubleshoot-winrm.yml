@@ -1,0 +1,26 @@
+---
+# Troubleshooting playbook to test different WinRM configurations
+- name: Troubleshoot WinRM Connection
+  hosts: all
+  gather_facts: no
+  
+  tasks:
+    - name: Test basic connectivity (ping)
+      wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ item }}"
+        timeout: 5
+        state: started
+      loop:
+        - 5985  # HTTP
+        - 5986  # HTTPS
+      register: port_check
+      ignore_errors: yes
+      delegate_to: localhost
+      
+    - name: Display port accessibility
+      debug:
+        msg: "Port {{ item.item }} is {{ 'OPEN' if item.failed == false else 'CLOSED/BLOCKED' }}"
+      loop: "{{ port_check.results }}"
+      delegate_to: localhost
+

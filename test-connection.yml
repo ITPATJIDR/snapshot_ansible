@@ -1,10 +1,7 @@
 ---
 - name: Test Connection to Hyper-V Hosts
-  hosts: all
+  hosts: windows
   gather_facts: yes
-  vars:
-    # Connection settings can be overridden here or in inventory
-    # These will be set by AWX inventory/credentials if configured there
   
   tasks:
     - name: Test WinRM connectivity
