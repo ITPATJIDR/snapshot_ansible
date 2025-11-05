@@ -1,16 +1,17 @@
 ---
 - name: Delete Hyper-V VM Snapshots
-  hosts: hyperv_hosts
+  hosts: all
   gather_facts: no
   vars:
-    vm_name: ""  # Required: VM name
-    snapshot_name: ""  # Required: Snapshot name to delete
+    vm_name: "test"  # Required: VM name
+    snapshot_name: "test - (11/5/2025 - 4:01:55 PM)"  # Required: Snapshot name to delete
+    delete_all_snapshots: false  # If true, deletes all snapshots for the VM
     
   tasks:
     - name: Validate required variables
       fail:
-        msg: "Both vm_name and snapshot_name are required"
-      when: vm_name == "" or snapshot_name == ""
+        msg: "vm_name is required. Set snapshot_name for specific snapshot or delete_all_snapshots=true for all."
+      when: vm_name == "" or (snapshot_name == "" and not delete_all_snapshots)
       
     - name: Delete specific snapshot
       win_shell: |
@@ -25,8 +26,35 @@
             exit 1
         }
       register: delete_result
+      when: snapshot_name != "" and not delete_all_snapshots
       
-    - name: Display result
+    - name: Delete all snapshots for VM
+      win_shell: |
+        $vmName = "{{ vm_name }}"
+        
+        try {
+            $snapshots = Get-VMSnapshot -VMName $vmName
+            if ($snapshots) {
+                $count = $snapshots.Count
+                $snapshots | Remove-VMSnapshot -Confirm:$false
+                Write-Output "SUCCESS: Deleted $count snapshot(s) from VM '$vmName'"
+            } else {
+                Write-Output "INFO: No snapshots found for VM '$vmName'"
+            }
+        } catch {
+            Write-Output "ERROR: Failed to delete snapshots - $_"
+            exit 1
+        }
+      register: delete_all_result
+      when: delete_all_snapshots
+      
+    - name: Display result for specific snapshot
       debug:
         msg: "{{ delete_result.stdout }}"
+      when: delete_result is defined and delete_result is not skipped
+      
+    - name: Display result for all snapshots
+      debug:
+        msg: "{{ delete_all_result.stdout }}"
+      when: delete_all_result is defined and delete_all_result is not skipped
 
