@@ -3,7 +3,6 @@
   hosts: all
   gather_facts: no
   vars:
-    snapshot_prefix: "{{ snapshot_prefix | default('AWX_Snapshot') }}"
     vm_names: ["test"]  # List of VMs to snapshot, empty means all VMs
     
   tasks:
@@ -14,7 +13,7 @@
       
     - name: Set snapshot name with timestamp
       set_fact:
-        snapshot_name: "{{ snapshot_prefix }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+        snapshot_name: "{{ snapshot_prefix | default('AWX_Snapshot') }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
       
     - name: Get all VMs if no specific VMs specified
       win_shell: |
