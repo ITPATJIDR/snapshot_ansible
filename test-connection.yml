@@ -1,0 +1,70 @@
+---
+- name: Test Connection to Hyper-V Hosts
+  hosts: hyperv_hosts
+  gather_facts: yes
+  
+  tasks:
+    - name: Test WinRM connectivity
+      win_ping:
+      register: ping_result
+      
+    - name: Display connection success
+      debug:
+        msg: "Successfully connected to {{ inventory_hostname }}"
+      when: ping_result is succeeded
+      
+    - name: Get PowerShell version
+      win_shell: $PSVersionTable.PSVersion.ToString()
+      register: ps_version
+      
+    - name: Display PowerShell version
+      debug:
+        msg: "PowerShell Version: {{ ps_version.stdout | trim }}"
+        
+    - name: Check if Hyper-V module is available
+      win_shell: |
+        if (Get-Module -ListAvailable -Name Hyper-V) {
+            Write-Output "Hyper-V module is available"
+            $feature = Get-WindowsFeature -Name Hyper-V
+            Write-Output "Hyper-V Role Installed: $($feature.Installed)"
+        } else {
+            Write-Output "Hyper-V module is NOT available"
+        }
+      register: hyperv_check
+      
+    - name: Display Hyper-V status
+      debug:
+        msg: "{{ hyperv_check.stdout_lines }}"
+        
+    - name: Get list of VMs (if Hyper-V is available)
+      win_shell: |
+        try {
+            $vms = Get-VM | Select-Object Name, State, Status
+            if ($vms) {
+                Write-Output "Found $($vms.Count) VM(s):"
+                $vms | ForEach-Object { Write-Output "  - $($_.Name) [$($_.State)]" }
+            } else {
+                Write-Output "No VMs found on this host"
+            }
+        } catch {
+            Write-Output "Unable to query VMs: $_"
+        }
+      register: vm_list
+      ignore_errors: yes
+      
+    - name: Display VM list
+      debug:
+        msg: "{{ vm_list.stdout_lines }}"
+      when: vm_list is succeeded
+      
+    - name: Summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Hostname: {{ ansible_hostname }}"
+          - "IP Address: {{ ansible_ip_addresses[0] | default('N/A') }}"
+          - "Connection: SUCCESS"
+          - "=========================================="
+

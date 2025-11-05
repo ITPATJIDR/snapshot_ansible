@@ -1,0 +1,49 @@
+---
+- name: List Hyper-V VM Snapshots
+  hosts: hyperv_hosts
+  gather_facts: no
+  vars:
+    vm_name: ""  # Specific VM name, empty means all VMs
+    
+  tasks:
+    - name: List all snapshots for all VMs
+      win_shell: |
+        Get-VM | ForEach-Object {
+            $vmName = $_.Name
+            $snapshots = Get-VMSnapshot -VMName $vmName
+            foreach ($snapshot in $snapshots) {
+                [PSCustomObject]@{
+                    VM = $vmName
+                    SnapshotName = $snapshot.Name
+                    CreationTime = $snapshot.CreationTime
+                    ParentSnapshot = $snapshot.ParentSnapshotName
+                }
+            }
+        } | ConvertTo-Json
+      register: all_snapshots
+      when: vm_name == ""
+      
+    - name: List snapshots for specific VM
+      win_shell: |
+        $snapshots = Get-VMSnapshot -VMName "{{ vm_name }}"
+        $snapshots | ForEach-Object {
+            [PSCustomObject]@{
+                VM = "{{ vm_name }}"
+                SnapshotName = $_.Name
+                CreationTime = $_.CreationTime
+                ParentSnapshot = $_.ParentSnapshotName
+            }
+        } | ConvertTo-Json
+      register: vm_snapshots
+      when: vm_name != ""
+      
+    - name: Display all snapshots
+      debug:
+        msg: "{{ all_snapshots.stdout | from_json }}"
+      when: vm_name == ""
+      
+    - name: Display VM snapshots
+      debug:
+        msg: "{{ vm_snapshots.stdout | from_json }}"
+      when: vm_name != ""
+

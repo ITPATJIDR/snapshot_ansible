@@ -1,0 +1,10 @@
+---
+collections:
+  # Windows management collection
+  - name: ansible.windows
+    version: ">=1.14.0"
+    
+  # Community Windows collection for additional modules
+  - name: community.windows
+    version: ">=1.13.0"
+

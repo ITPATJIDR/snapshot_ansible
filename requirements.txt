@@ -1,0 +1,9 @@
+# Python requirements for Ansible AWX
+ansible>=2.15.0
+pywinrm>=0.4.3
+requests-credssp>=2.0.0
+requests-ntlm>=1.2.0
+# For Kerberos authentication (optional, uncomment if needed)
+# pywinrm[kerberos]>=0.4.3
+# requests-kerberos>=0.14.0
+

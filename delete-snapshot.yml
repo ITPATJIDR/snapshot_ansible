@@ -1,0 +1,32 @@
+---
+- name: Delete Hyper-V VM Snapshots
+  hosts: hyperv_hosts
+  gather_facts: no
+  vars:
+    vm_name: ""  # Required: VM name
+    snapshot_name: ""  # Required: Snapshot name to delete
+    
+  tasks:
+    - name: Validate required variables
+      fail:
+        msg: "Both vm_name and snapshot_name are required"
+      when: vm_name == "" or snapshot_name == ""
+      
+    - name: Delete specific snapshot
+      win_shell: |
+        $vmName = "{{ vm_name }}"
+        $snapshotName = "{{ snapshot_name }}"
+        
+        try {
+            Remove-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
+            Write-Output "SUCCESS: Snapshot '$snapshotName' deleted from VM '$vmName'"
+        } catch {
+            Write-Output "ERROR: Failed to delete snapshot - $_"
+            exit 1
+        }
+      register: delete_result
+      
+    - name: Display result
+      debug:
+        msg: "{{ delete_result.stdout }}"
+
