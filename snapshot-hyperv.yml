@@ -4,7 +4,7 @@
   gather_facts: no
   vars:
     snapshot_name: "{{ snapshot_prefix }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
-    vm_names: []  # List of VMs to snapshot, empty means all VMs
+    vm_names: ["test"]  # List of VMs to snapshot, empty means all VMs
     
   tasks:
     - name: Gather date/time facts
