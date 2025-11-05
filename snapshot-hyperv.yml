@@ -1,6 +1,6 @@
 ---
 - name: Create Hyper-V VM Snapshots
-  hosts: windows
+  hosts: all
   gather_facts: no
   vars:
     snapshot_name: "{{ snapshot_prefix }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
