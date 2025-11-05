@@ -1,6 +1,6 @@
 ---
 - name: Test Connection to Hyper-V Hosts
-  hosts: Windows Server
+  hosts: "Windows Server"
   gather_facts: yes
   
   tasks:
