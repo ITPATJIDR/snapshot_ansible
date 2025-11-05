@@ -1,6 +1,6 @@
 ---
 - name: Test Connection to Hyper-V Hosts
-  hosts: windows
+  hosts: all
   gather_facts: yes
   
   tasks:
