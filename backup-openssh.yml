@@ -1,0 +1,145 @@
+---
+- name: Backup OpenSSH Service on Linux
+  hosts: all
+  gather_facts: yes
+  vars:
+    backup_dir: "/tmp/openssh_backup"  # Backup directory
+    backup_prefix: "openssh_backup"  # Prefix for backup files
+    
+  tasks:
+    - name: Gather date/time facts
+      setup:
+        gather_subset:
+          - date_time
+      
+    - name: Set backup name with timestamp
+      set_fact:
+        backup_name: "{{ backup_prefix }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+        backup_path: "{{ backup_dir }}/{{ backup_prefix }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+      
+    - name: Create backup directory
+      file:
+        path: "{{ backup_path }}"
+        state: directory
+        mode: '0755'
+      become: yes
+      
+    - name: Check if OpenSSH is installed
+      command: which sshd
+      register: sshd_check
+      changed_when: false
+      failed_when: false
+      
+    - name: Fail if OpenSSH is not installed
+      fail:
+        msg: "OpenSSH is not installed on this system"
+      when: sshd_check.rc != 0
+      
+    - name: Get OpenSSH version
+      command: sshd -V
+      register: sshd_version
+      changed_when: false
+      failed_when: false
+      
+    - name: Save OpenSSH version to file
+      copy:
+        content: "{{ sshd_version.stderr | default(sshd_version.stdout) }}"
+        dest: "{{ backup_path }}/openssh_version.txt"
+        mode: '0644'
+      become: yes
+      
+    - name: Backup SSH daemon configuration file
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: "{{ backup_path }}/sshd_config"
+        remote_src: yes
+        mode: '0644'
+      become: yes
+      register: sshd_config_backup
+      
+    - name: Backup SSH client configuration file
+      copy:
+        src: /etc/ssh/ssh_config
+        dest: "{{ backup_path }}/ssh_config"
+        remote_src: yes
+        mode: '0644'
+      become: yes
+      ignore_errors: yes
+      
+    - name: Backup SSH host keys
+      copy:
+        src: "{{ item }}"
+        dest: "{{ backup_path }}/{{ item | basename }}"
+        remote_src: yes
+        mode: '0600'
+      become: yes
+      loop:
+        - /etc/ssh/ssh_host_rsa_key
+        - /etc/ssh/ssh_host_rsa_key.pub
+        - /etc/ssh/ssh_host_ecdsa_key
+        - /etc/ssh/ssh_host_ecdsa_key.pub
+        - /etc/ssh/ssh_host_ed25519_key
+        - /etc/ssh/ssh_host_ed25519_key.pub
+        - /etc/ssh/ssh_host_dsa_key
+        - /etc/ssh/ssh_host_dsa_key.pub
+      ignore_errors: yes
+      when: item is file
+      
+    - name: Get SSH service status
+      systemd:
+        name: sshd
+      register: sshd_status
+      changed_when: false
+      failed_when: false
+      
+    - name: Save SSH service status to file
+      copy:
+        content: |
+          Service Name: sshd
+          Active: {{ sshd_status.status.ActiveState | default('unknown') }}
+          Enabled: {{ sshd_status.status.Enabled | default('unknown') }}
+          Loaded: {{ sshd_status.status.LoadState | default('unknown') }}
+          Main PID: {{ sshd_status.status.MainPID | default('unknown') }}
+        dest: "{{ backup_path }}/service_status.txt"
+        mode: '0644'
+      become: yes
+      when: sshd_status.status is defined
+      
+    - name: Create backup manifest
+      copy:
+        content: |
+          OpenSSH Backup Manifest
+          =======================
+          Backup Date: {{ ansible_date_time.date }} {{ ansible_date_time.time }}
+          Hostname: {{ inventory_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          OpenSSH Version: {{ sshd_version.stderr | default(sshd_version.stdout) | default('unknown') }}
+          
+          Files Backed Up:
+          - sshd_config: {{ 'yes' if sshd_config_backup.changed else 'already exists' }}
+          - ssh_config: {{ 'yes' if ssh_config_backup is defined and ssh_config_backup.changed else 'skipped or failed' }}
+          - SSH host keys: Multiple files
+          - Service status: {{ 'yes' if sshd_status.status is defined else 'no' }}
+          
+          Backup Location: {{ backup_path }}
+        dest: "{{ backup_path }}/MANIFEST.txt"
+        mode: '0644'
+      become: yes
+      
+    - name: Create compressed backup archive
+      archive:
+        path: "{{ backup_path }}"
+        dest: "{{ backup_dir }}/{{ backup_name }}.tar.gz"
+        format: gz
+        mode: '0644'
+      become: yes
+      register: archive_result
+      
+    - name: Display backup summary
+      debug:
+        msg: |
+          OpenSSH backup completed successfully!
+          Backup location: {{ backup_path }}
+          Archive: {{ backup_dir }}/{{ backup_name }}.tar.gz
+          Archive size: {{ archive_result.size | default('unknown') }} bytes
+
