@@ -1,16 +1,11 @@
 ---
 - name: Create Hyper-V VM Snapshots
   hosts: all
-  gather_facts: no
+  gather_facts: yes
   vars:
     vm_names: ["test"]  # List of VMs to snapshot, empty means all VMs
     
   tasks:
-    - name: Gather date/time facts
-      setup:
-        gather_subset:
-          - date_time
-      
     - name: Set snapshot name with timestamp
       set_fact:
         snapshot_name: "{{ snapshot_prefix | default('AWX_Snapshot') }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
