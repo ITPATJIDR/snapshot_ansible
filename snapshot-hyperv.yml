@@ -9,9 +9,10 @@
   #   - Empty/not set: vm_names: [] or leave unset (will snapshot all VMs)
     
   tasks:
-    - name: Set snapshot name with timestamp
+    - name: Get formatted date and time
       set_fact:
-        snapshot_name: "{{ snapshot_prefix | default('AWX_Snapshot') }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+        snapshot_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        snapshot_time: "{{ ansible_date_time.time }}"
       
     - name: Normalize vm_names to a list (handle string from AWX survey)
       set_fact:
@@ -48,16 +49,16 @@
       
     - name: Display VMs to be snapshotted
       debug:
-        msg: "Creating snapshot '{{ snapshot_name }}' for VMs: {{ target_vms }}"
+        msg: "Creating snapshots for VMs: {{ target_vms }}"
         
     - name: Create Hyper-V checkpoint/snapshot
       win_shell: |
         $vmName = "{{ item }}"
-        $snapshotName = "{{ snapshot_name }}"
+        $snapshotName = "$vmName - ({{ snapshot_date }} - {{ snapshot_time }})"
         
         try {
             Checkpoint-VM -Name $vmName -SnapshotName $snapshotName
-            Write-Output "SUCCESS: Snapshot created for $vmName"
+            Write-Output "SUCCESS: Snapshot '$snapshotName' created for $vmName"
         } catch {
             Write-Output "ERROR: Failed to create snapshot for $vmName - $_"
             exit 1
