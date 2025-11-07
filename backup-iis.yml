@@ -199,7 +199,6 @@
         $summaryPath = "{{ backup_folder }}\backup_summary.txt"
         $summary = @"
 IIS Backup Summary
-==================
 Date: {{ backup_date }}
 Time: {{ backup_time }}
 Host: {{ inventory_hostname }}
