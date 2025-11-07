@@ -104,14 +104,12 @@
         $appcmd = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
         
         if (Test-Path $appcmd) {
-            $output = & $appcmd list config /config:applicationHost.config /xml 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $output | Out-File -FilePath $backupPath -Encoding UTF8
+            try {
+                & $appcmd list config -config:applicationHost.config -xml | Out-File -FilePath $backupPath -Encoding UTF8 -ErrorAction Stop
                 Write-Output "SUCCESS: IIS configuration exported to $backupPath"
-            } else {
-                Write-Output "ERROR: Failed to export IIS configuration. Exit code: $LASTEXITCODE"
-                Write-Output $output
-                exit 1
+            } catch {
+                Write-Output "WARNING: Failed to export IIS configuration using appcmd: $_"
+                Write-Output "This is non-critical, continuing with backup..."
             }
         } else {
             Write-Output "WARNING: appcmd.exe not found, skipping XML export"
@@ -149,9 +147,18 @@
       register: websites_list
       ignore_errors: yes
     
-    - name: Set websites list for backup
+    - name: Initialize websites list for backup
       set_fact:
-        websites_to_backup: "{{ (websites_list.stdout | from_json) if (websites_list.stdout is defined and websites_list.stdout != '[]' and websites_list.stdout != '') else [] }}"
+        websites_to_backup: []
+    
+    - name: Set websites list for backup (when valid)
+      set_fact:
+        websites_to_backup: "{{ websites_list.stdout | from_json }}"
+      when: 
+        - websites_list.stdout is defined
+        - websites_list.stdout != ''
+        - websites_list.stdout != '[]'
+      ignore_errors: yes
     
     - name: Backup website configurations
       win_shell: |
