@@ -104,11 +104,13 @@
         $appcmd = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
         
         if (Test-Path $appcmd) {
-            & $appcmd list config /config:applicationHost.config /xml > $backupPath
+            $output = & $appcmd list config /config:applicationHost.config /xml 2>&1
             if ($LASTEXITCODE -eq 0) {
+                $output | Out-File -FilePath $backupPath -Encoding UTF8
                 Write-Output "SUCCESS: IIS configuration exported to $backupPath"
             } else {
-                Write-Output "ERROR: Failed to export IIS configuration"
+                Write-Output "ERROR: Failed to export IIS configuration. Exit code: $LASTEXITCODE"
+                Write-Output $output
                 exit 1
             }
         } else {
@@ -122,7 +124,8 @@
         Import-Module WebAdministration -ErrorAction SilentlyContinue
         if (Get-Module WebAdministration) {
             $websites = @()
-            $targetSites = {{ backup_websites_normalized | to_json }}
+            $targetSitesJson = '{{ backup_websites_normalized | to_json }}'
+            $targetSites = $targetSitesJson | ConvertFrom-Json
             
             if ($targetSites.Count -eq 0) {
                 # Backup all websites
