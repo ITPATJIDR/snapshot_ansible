@@ -15,7 +15,8 @@
       
     - name: Get system information
       shell: |
-        echo "OS:$(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+        os_name=$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')
+        echo "OS:${os_name}"
         echo "Kernel:$(uname -r)"
         echo "Hostname:$(hostname)"
         echo "Uptime:$(uptime -p 2>/dev/null || uptime | awk '{print $3,$4}' | sed 's/,//')"
