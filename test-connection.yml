@@ -57,14 +57,27 @@
         msg: "{{ vm_list.stdout_lines }}"
       when: vm_list is succeeded
       
+    - name: Get system information for summary
+      win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        $hostname = $env:COMPUTERNAME
+        $ipAddresses = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } | Select-Object -First 1).IPAddress
+        if (-not $ipAddresses) {
+            $ipAddresses = "N/A"
+        }
+        Write-Output "OS:$($os.Caption) $($os.Version)"
+        Write-Output "Hostname:$hostname"
+        Write-Output "IPAddress:$ipAddresses"
+      register: system_info
+      
     - name: Summary
       debug:
         msg:
           - "=========================================="
           - "Host: {{ inventory_hostname }}"
-          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
-          - "Hostname: {{ ansible_hostname }}"
-          - "IP Address: {{ ansible_ip_addresses[0] | default('N/A') }}"
+          - "{{ system_info.stdout_lines[0] }}"
+          - "{{ system_info.stdout_lines[1] }}"
+          - "{{ system_info.stdout_lines[2] }}"
           - "Connection: SUCCESS"
           - "=========================================="
 
