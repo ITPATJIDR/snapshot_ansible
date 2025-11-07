@@ -28,6 +28,9 @@
     - name: Set backup path
       set_fact:
         backup_base_path: "{{ backup_path | default('C:\\IIS_Backups') }}"
+    
+    - name: Set backup folder with timestamp
+      set_fact:
         backup_folder: "{{ backup_base_path }}\\IIS_Backup_{{ backup_timestamp }}"
     
     - name: Normalize backup_websites to a list (handle string from AWX survey)
