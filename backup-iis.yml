@@ -237,6 +237,7 @@
         Write-Output "SUCCESS: Backup summary created"
       register: summary_result
       ignore_errors: yes
+      failed_when: false
     
     - name: Display backup results
       debug:
