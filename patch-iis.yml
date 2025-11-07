@@ -1,0 +1,299 @@
+---
+- name: Patch IIS and Windows Updates
+  hosts: all
+  gather_facts: yes
+  # install_updates can be set in AWX as an extra variable
+  #   - true: Install available updates (default: false - only check)
+  #   - false: Only check for available updates without installing
+  #
+  # reboot_if_needed can be set in AWX as an extra variable
+  #   - true: Automatically reboot if required after updates (default: false)
+  #   - false: Do not reboot automatically
+  #
+  # update_categories can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - String from survey: update_categories: "SecurityUpdates,UpdateRollups" or update_categories: "SecurityUpdates"
+  #   - List: update_categories: ["SecurityUpdates", "UpdateRollups", "CriticalUpdates"]
+  #   - Empty/not set: update_categories: [] or leave unset (will check all update categories)
+  #   Valid categories: SecurityUpdates, UpdateRollups, CriticalUpdates, DefinitionUpdates, FeaturePacks, ServicePacks, Tools, Updates
+  
+  tasks:
+    - name: Get formatted date and time
+      set_fact:
+        patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        patch_time: "{{ ansible_date_time.time }}"
+    
+    - name: Normalize update_categories to a list (handle string from AWX survey)
+      set_fact:
+        update_categories_normalized: >-
+          {%- if update_categories is not defined or update_categories == '' -%}
+            []
+          {%- elif update_categories is string -%}
+            {%- if ',' in update_categories -%}
+              {{ update_categories.split(',') | map('trim') | list | select('length') | list }}
+            {%- else -%}
+              {{ [update_categories | trim] }}
+            {%- endif -%}
+          {%- elif update_categories is iterable and update_categories is not string -%}
+            {{ update_categories | list }}
+          {%- else -%}
+            []
+          {%- endif -%}
+    
+    - name: Check if IIS is installed
+      win_shell: |
+        $feature = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+        if ($feature) {
+            Write-Output "INSTALLED:$($feature.Installed)"
+        } else {
+            Write-Output "INSTALLED:False"
+        }
+      register: iis_check
+      ignore_errors: yes
+    
+    - name: Fail if IIS is not installed
+      fail:
+        msg: "IIS (Web-Server) is not installed on this host"
+      when: "'True' not in iis_check.stdout"
+    
+    - name: Get IIS version before patching
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+        if (-not $version) {
+            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+        }
+        if (-not $version) {
+            $version = "Unknown"
+        }
+        Write-Output $version
+      register: iis_version_before
+      ignore_errors: yes
+    
+    - name: Get Windows version and build
+      win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        Write-Output "OS:$($os.Caption) Build:$($os.BuildNumber)"
+      register: windows_info
+    
+    - name: Display patching information
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS Patching Information"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - "Windows: {{ windows_info.stdout }}"
+          - "IIS Version (Before): {{ iis_version_before.stdout | default('Unknown') }}"
+          - "Install Updates: {{ install_updates | default(false) }}"
+          - "Reboot If Needed: {{ reboot_if_needed | default(false) }}"
+          - "Update Categories: {{ 'All categories' if update_categories_normalized | length == 0 else update_categories_normalized }}"
+          - "=========================================="
+    
+    - name: Check Windows Update service status
+      win_shell: |
+        $service = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
+        if ($service) {
+            Write-Output "STATUS:$($service.Status)"
+            if ($service.Status -ne 'Running') {
+                Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+                $service = Get-Service -Name wuauserv
+                Write-Output "STATUS_AFTER:$($service.Status)"
+            }
+        } else {
+            Write-Output "STATUS:NotFound"
+        }
+      register: wuauserv_status
+      ignore_errors: yes
+    
+    - name: Install Windows Update PowerShell module if needed
+      win_shell: |
+        if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+            Write-Output "INSTALLING:PSWindowsUpdate module"
+            Install-Module -Name PSWindowsUpdate -Force -AllowClobber -Scope CurrentUser -ErrorAction Stop
+            Write-Output "INSTALLED:PSWindowsUpdate module installed"
+        } else {
+            Write-Output "EXISTS:PSWindowsUpdate module already available"
+        }
+      register: ps_windows_update_install
+      ignore_errors: yes
+    
+    - name: Get available Windows updates
+      win_shell: |
+        Import-Module PSWindowsUpdate -ErrorAction SilentlyContinue
+        $categories = {{ update_categories_normalized | to_json }}
+        
+        if ($categories.Count -eq 0) {
+            # Get all available updates
+            $updates = Get-WUList -MicrosoftUpdate -ErrorAction SilentlyContinue
+        } else {
+            # Get updates for specific categories
+            $updates = Get-WUList -MicrosoftUpdate -Category $categories -ErrorAction SilentlyContinue
+        }
+        
+        if ($updates) {
+            $result = @()
+            foreach ($update in $updates) {
+                $result += [PSCustomObject]@{
+                    Title = $update.Title
+                    KB = $update.KB
+                    Size = $update.Size
+                    Category = $update.Category
+                    IsDownloaded = $update.IsDownloaded
+                    IsInstalled = $update.IsInstalled
+                } | ConvertTo-Json -Compress
+            }
+            $result | ConvertTo-Json
+        } else {
+            Write-Output "[]"
+        }
+      register: available_updates
+      ignore_errors: yes
+    
+    - name: Parse available updates
+      set_fact:
+        updates_list: "{{ (available_updates.stdout | from_json) if (available_updates.stdout is defined and available_updates.stdout != '' and available_updates.stdout != '[]') else [] }}"
+    
+    - name: Display available updates
+      debug:
+        msg:
+          - "=========================================="
+          - "Available Windows Updates"
+          - "Total Updates Found: {{ updates_list | length }}"
+          - "=========================================="
+    
+    - name: Display update details
+      debug:
+        msg: "{{ item | from_json | to_nice_json }}"
+      loop: "{{ updates_list }}"
+      when: updates_list | length > 0
+    
+    - name: Install Windows updates
+      win_shell: |
+        Import-Module PSWindowsUpdate -ErrorAction SilentlyContinue
+        $categories = {{ update_categories_normalized | to_json }}
+        $reboot = {{ reboot_if_needed | default(false) | lower | to_json }}
+        
+        try {
+            if ($categories.Count -eq 0) {
+                # Install all available updates
+                if ($reboot -eq $true) {
+                    $result = Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -AutoReboot -ErrorAction Stop
+                } else {
+                    $result = Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -ErrorAction Stop
+                }
+            } else {
+                # Install updates for specific categories
+                if ($reboot -eq $true) {
+                    $result = Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -Category $categories -AutoReboot -ErrorAction Stop
+                } else {
+                    $result = Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -Category $categories -ErrorAction Stop
+                }
+            }
+            
+            $installed = @()
+            foreach ($update in $result) {
+                $installed += [PSCustomObject]@{
+                    Title = $update.Title
+                    KB = $update.KB
+                    Result = $update.Result
+                } | ConvertTo-Json -Compress
+            }
+            $installed | ConvertTo-Json
+            Write-Output "SUCCESS: Updates installed"
+        } catch {
+            Write-Output "ERROR: Failed to install updates - $_"
+            exit 1
+        }
+      register: install_result
+      when: 
+        - install_updates | default(false) | bool
+        - updates_list | length > 0
+      ignore_errors: yes
+    
+    - name: Check if reboot is required
+      win_shell: |
+        $rebootRequired = (Get-WmiObject -Class Win32_OperatingSystem).RebootPending
+        if ($rebootRequired) {
+            Write-Output "REQUIRED:Yes"
+        } else {
+            Write-Output "REQUIRED:No"
+        }
+      register: reboot_check
+      when: install_updates | default(false) | bool
+      ignore_errors: yes
+    
+    - name: Reboot server if needed
+      win_reboot:
+        reboot_timeout: 3600
+        pre_reboot_delay: 60
+        post_reboot_delay: 120
+        test_command: whoami
+      when:
+        - install_updates | default(false) | bool
+        - reboot_if_needed | default(false) | bool
+        - "'Yes' in (reboot_check.stdout | default(''))"
+    
+    - name: Get IIS version after patching
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+        if (-not $version) {
+            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+        }
+        if (-not $version) {
+            $version = "Unknown"
+        }
+        Write-Output $version
+      register: iis_version_after
+      ignore_errors: yes
+      when: install_updates | default(false) | bool
+    
+    - name: Verify IIS is running after updates
+      win_shell: |
+        $service = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+        if ($service) {
+            if ($service.Status -eq 'Running') {
+                Write-Output "STATUS:Running"
+            } else {
+                Write-Output "STATUS:$($service.Status)"
+                Start-Service -Name W3SVC -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+                $service = Get-Service -Name W3SVC
+                Write-Output "STATUS_AFTER:$($service.Status)"
+            }
+        } else {
+            Write-Output "STATUS:NotFound"
+        }
+      register: iis_service_check
+      when: install_updates | default(false) | bool
+      ignore_errors: yes
+    
+    - name: Display installed updates
+      debug:
+        msg: "{{ item | from_json | to_nice_json }}"
+      loop: "{{ (install_result.stdout | from_json) if (install_result.stdout is defined and install_result.stdout != '' and install_result.stdout != '[]') else [] }}"
+      when: 
+        - install_updates | default(false) | bool
+        - install_result.stdout is defined
+        - install_result.stdout != ''
+        - install_result.stdout != '[]'
+    
+    - name: Display patching summary
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS Patching Summary"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - "IIS Version (Before): {{ iis_version_before.stdout | default('Unknown') }}"
+          - "IIS Version (After): {{ iis_version_after.stdout | default('Unknown') if install_updates | default(false) else 'N/A (updates not installed)' }}"
+          - "Available Updates: {{ updates_list | length }}"
+          - "Updates Installed: {{ (install_result.stdout | from_json | length) if (install_updates | default(false) and install_result.stdout is defined and install_result.stdout != '' and install_result.stdout != '[]') else 0 }}"
+          - "Reboot Required: {{ 'Yes' if ('Yes' in (reboot_check.stdout | default(''))) else 'No' if install_updates | default(false) else 'N/A' }}"
+          - "IIS Service Status: {{ iis_service_check.stdout | default('N/A') }}"
+          - "=========================================="
+

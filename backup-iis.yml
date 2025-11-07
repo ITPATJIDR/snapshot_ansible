@@ -1,0 +1,243 @@
+---
+- name: Backup IIS Configuration and Websites
+  hosts: all
+  gather_facts: yes
+  # backup_path can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - backup_path: "C:\IIS_Backups"
+  #   - backup_path: "\\server\share\backups"
+  #   - If not set, defaults to: C:\IIS_Backups
+  #
+  # backup_websites can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - String from survey: backup_websites: "Default Web Site,MySite" or backup_websites: "Default Web Site"
+  #   - List: backup_websites: ["Default Web Site", "MySite"]
+  #   - Empty/not set: backup_websites: [] or leave unset (will backup all websites)
+  #
+  # backup_content can be set in AWX as an extra variable
+  #   - true: Backup website content files (default: false)
+  #   - false: Only backup IIS configuration
+  
+  tasks:
+    - name: Get formatted date and time
+      set_fact:
+        backup_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        backup_time: "{{ ansible_date_time.time }}"
+        backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+    
+    - name: Set backup path
+      set_fact:
+        backup_base_path: "{{ backup_path | default('C:\\IIS_Backups') }}"
+        backup_folder: "{{ backup_base_path }}\\IIS_Backup_{{ backup_timestamp }}"
+    
+    - name: Normalize backup_websites to a list (handle string from AWX survey)
+      set_fact:
+        backup_websites_normalized: >-
+          {%- if backup_websites is not defined or backup_websites == '' -%}
+            []
+          {%- elif backup_websites is string -%}
+            {%- if ',' in backup_websites -%}
+              {{ backup_websites.split(',') | map('trim') | list | select('length') | list }}
+            {%- else -%}
+              {{ [backup_websites | trim] }}
+            {%- endif -%}
+          {%- elif backup_websites is iterable and backup_websites is not string -%}
+            {{ backup_websites | list }}
+          {%- else -%}
+            []
+          {%- endif -%}
+    
+    - name: Check if IIS is installed
+      win_shell: |
+        $feature = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+        if ($feature) {
+            Write-Output "INSTALLED:$($feature.Installed)"
+        } else {
+            Write-Output "INSTALLED:False"
+        }
+      register: iis_check
+      ignore_errors: yes
+    
+    - name: Fail if IIS is not installed
+      fail:
+        msg: "IIS (Web-Server) is not installed on this host"
+      when: "'True' not in iis_check.stdout"
+    
+    - name: Create backup directory
+      win_file:
+        path: "{{ backup_folder }}"
+        state: directory
+      register: backup_dir_result
+    
+    - name: Display backup information
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS Backup Information"
+          - "Backup Path: {{ backup_folder }}"
+          - "Date: {{ backup_date }}"
+          - "Time: {{ backup_time }}"
+          - "Backup Websites: {{ 'All websites' if backup_websites_normalized | length == 0 else backup_websites_normalized }}"
+          - "Backup Content: {{ backup_content | default(false) }}"
+          - "=========================================="
+    
+    - name: Backup IIS Configuration (applicationHost.config)
+      win_shell: |
+        $configPath = "$env:SystemRoot\System32\inetsrv\config\applicationHost.config"
+        $backupPath = "{{ backup_folder }}\applicationHost.config"
+        
+        if (Test-Path $configPath) {
+            Copy-Item -Path $configPath -Destination $backupPath -Force
+            Write-Output "SUCCESS: applicationHost.config backed up to $backupPath"
+        } else {
+            Write-Output "ERROR: applicationHost.config not found at $configPath"
+            exit 1
+        }
+      register: config_backup
+    
+    - name: Export IIS Configuration using appcmd
+      win_shell: |
+        $backupPath = "{{ backup_folder }}\iis_config_export.xml"
+        $appcmd = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
+        
+        if (Test-Path $appcmd) {
+            & $appcmd list config /config:applicationHost.config /xml > $backupPath
+            if ($LASTEXITCODE -eq 0) {
+                Write-Output "SUCCESS: IIS configuration exported to $backupPath"
+            } else {
+                Write-Output "ERROR: Failed to export IIS configuration"
+                exit 1
+            }
+        } else {
+            Write-Output "WARNING: appcmd.exe not found, skipping XML export"
+        }
+      register: iis_export
+      ignore_errors: yes
+    
+    - name: Get list of websites to backup
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        if (Get-Module WebAdministration) {
+            $websites = @()
+            $targetSites = {{ backup_websites_normalized | to_json }}
+            
+            if ($targetSites.Count -eq 0) {
+                # Backup all websites
+                $websites = Get-Website | Select-Object -ExpandProperty Name
+            } else {
+                # Backup only specified websites
+                foreach ($site in $targetSites) {
+                    $website = Get-Website -Name $site -ErrorAction SilentlyContinue
+                    if ($website) {
+                        $websites += $site
+                    } else {
+                        Write-Output "WARNING: Website '$site' not found, skipping"
+                    }
+                }
+            }
+            
+            $websites | ConvertTo-Json
+        } else {
+            Write-Output "[]"
+        }
+      register: websites_list
+      ignore_errors: yes
+    
+    - name: Set websites list for backup
+      set_fact:
+        websites_to_backup: "{{ (websites_list.stdout | from_json) if (websites_list.stdout is defined and websites_list.stdout != '[]' and websites_list.stdout != '') else [] }}"
+    
+    - name: Backup website configurations
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        $websiteName = "{{ item }}"
+        $websiteBackupPath = "{{ backup_folder }}\Websites\$websiteName"
+        
+        # Create website backup directory
+        New-Item -ItemType Directory -Path $websiteBackupPath -Force | Out-Null
+        
+        try {
+            $website = Get-Website -Name $websiteName
+            $appPath = "IIS:\Sites\$websiteName"
+            
+            # Backup web.config if exists
+            $webConfigPath = Join-Path $website.physicalPath "web.config"
+            if (Test-Path $webConfigPath) {
+                Copy-Item -Path $webConfigPath -Destination "$websiteBackupPath\web.config" -Force
+                Write-Output "SUCCESS: web.config backed up for $websiteName"
+            }
+            
+            # Export website configuration
+            $configFile = "$websiteBackupPath\website_config.xml"
+            & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list site "$websiteName" /config:applicationHost.config /xml > $configFile
+            Write-Output "SUCCESS: Configuration exported for $websiteName"
+            
+            # Backup website content if requested
+            $backupContent = {{ backup_content | default(false) | lower | to_json }}
+            if ($backupContent -eq $true) {
+                $contentBackupPath = "$websiteBackupPath\Content"
+                if (Test-Path $website.physicalPath) {
+                    Copy-Item -Path $website.physicalPath -Destination $contentBackupPath -Recurse -Force
+                    Write-Output "SUCCESS: Content backed up for $websiteName"
+                } else {
+                    Write-Output "WARNING: Physical path not found for $websiteName"
+                }
+            }
+            
+            Write-Output "COMPLETE: Backup finished for $websiteName"
+        } catch {
+            Write-Output "ERROR: Failed to backup $websiteName - $_"
+            exit 1
+        }
+      loop: "{{ websites_to_backup }}"
+      register: website_backups
+      when: websites_to_backup | length > 0
+      ignore_errors: yes
+    
+    - name: Create backup summary file
+      win_shell: |
+        $summaryPath = "{{ backup_folder }}\backup_summary.txt"
+        $summary = @"
+IIS Backup Summary
+==================
+Date: {{ backup_date }}
+Time: {{ backup_time }}
+Host: {{ inventory_hostname }}
+
+Backup Location: {{ backup_folder }}
+
+Configuration Files:
+- applicationHost.config: Backed up
+- iis_config_export.xml: Exported
+
+Websites Backed Up:
+"@
+        
+        $websites = {{ websites_to_backup | to_json }}
+        if ($websites.Count -gt 0) {
+            foreach ($site in $websites) {
+                $summary += "`n- $site"
+            }
+        } else {
+            $summary += "`n- No websites configured"
+        }
+        
+        $summary | Out-File -FilePath $summaryPath -Encoding UTF8
+        Write-Output "SUCCESS: Backup summary created"
+      register: summary_result
+      ignore_errors: yes
+    
+    - name: Display backup results
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS Backup Completed"
+          - "Backup Location: {{ backup_folder }}"
+          - "=========================================="
+    
+    - name: Display website backup results
+      debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ website_backups.results | default([]) }}"
+      when: website_backups is defined and website_backups.results is defined
+
