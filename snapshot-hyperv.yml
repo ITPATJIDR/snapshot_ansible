@@ -2,29 +2,49 @@
 - name: Create Hyper-V VM Snapshots
   hosts: all
   gather_facts: yes
-  # vm_names can be set in AWX as an extra variable
-  # Example: vm_names: ["vm1", "vm2"] or vm_names: [] for all VMs
+  # vm_names can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - String from survey: vm_names: "vm1,vm2" or vm_names: "vm1"
+  #   - List: vm_names: ["vm1", "vm2"]
+  #   - Empty/not set: vm_names: [] or leave unset (will snapshot all VMs)
     
   tasks:
     - name: Set snapshot name with timestamp
       set_fact:
         snapshot_name: "{{ snapshot_prefix | default('AWX_Snapshot') }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
       
+    - name: Normalize vm_names to a list (handle string from AWX survey)
+      set_fact:
+        vm_names_normalized: >-
+          {%- if vm_names is not defined or vm_names == '' -%}
+            []
+          {%- elif vm_names is string -%}
+            {%- if ',' in vm_names -%}
+              {{ vm_names.split(',') | map('trim') | list | select('length') | list }}
+            {%- else -%}
+              {{ [vm_names | trim] }}
+            {%- endif -%}
+          {%- elif vm_names is iterable and vm_names is not string -%}
+            {{ vm_names | list }}
+          {%- else -%}
+            []
+          {%- endif -%}
+      
     - name: Get all VMs if no specific VMs specified
       win_shell: |
         Get-VM | Select-Object -ExpandProperty Name | ConvertTo-Json
       register: all_vms
-      when: (vm_names | default([])) | length == 0
+      when: vm_names_normalized | length == 0
       
     - name: Set VM list from all VMs
       set_fact:
         target_vms: "{{ all_vms.stdout | from_json }}"
-      when: (vm_names | default([])) | length == 0
+      when: vm_names_normalized | length == 0
       
     - name: Set VM list from provided names
       set_fact:
-        target_vms: "{{ vm_names | default([]) }}"
-      when: (vm_names | default([])) | length > 0
+        target_vms: "{{ vm_names_normalized }}"
+      when: vm_names_normalized | length > 0
       
     - name: Display VMs to be snapshotted
       debug:
