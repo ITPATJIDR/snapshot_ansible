@@ -197,28 +197,27 @@
     - name: Create backup summary file
       win_shell: |
         $summaryPath = "{{ backup_folder }}\backup_summary.txt"
-        $summary = @"
-IIS Backup Summary
-Date: {{ backup_date }}
-Time: {{ backup_time }}
-Host: {{ inventory_hostname }}
-
-Backup Location: {{ backup_folder }}
-
-Configuration Files:
-- applicationHost.config: Backed up
-- iis_config_export.xml: Exported
-
-Websites Backed Up:
-"@
+        $summary = "IIS Backup Summary`r`n"
+        $summary += "==================`r`n"
+        $summary += "Date: {{ backup_date }}`r`n"
+        $summary += "Time: {{ backup_time }}`r`n"
+        $summary += "Host: {{ inventory_hostname }}`r`n"
+        $summary += "`r`n"
+        $summary += "Backup Location: {{ backup_folder }}`r`n"
+        $summary += "`r`n"
+        $summary += "Configuration Files:`r`n"
+        $summary += "- applicationHost.config: Backed up`r`n"
+        $summary += "- iis_config_export.xml: Exported`r`n"
+        $summary += "`r`n"
+        $summary += "Websites Backed Up:`r`n"
         
         $websites = {{ websites_to_backup | to_json }}
         if ($websites.Count -gt 0) {
             foreach ($site in $websites) {
-                $summary += "`n- $site"
+                $summary += "- $site`r`n"
             }
         } else {
-            $summary += "`n- No websites configured"
+            $summary += "- No websites configured`r`n"
         }
         
         $summary | Out-File -FilePath $summaryPath -Encoding UTF8
