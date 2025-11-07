@@ -2,8 +2,8 @@
 - name: Create Hyper-V VM Snapshots
   hosts: all
   gather_facts: yes
-  vars:
-    vm_names: ["test"]  # List of VMs to snapshot, empty means all VMs
+  # vm_names can be set in AWX as an extra variable
+  # Example: vm_names: ["vm1", "vm2"] or vm_names: [] for all VMs
     
   tasks:
     - name: Set snapshot name with timestamp
@@ -14,17 +14,17 @@
       win_shell: |
         Get-VM | Select-Object -ExpandProperty Name | ConvertTo-Json
       register: all_vms
-      when: vm_names | length == 0
+      when: (vm_names | default([])) | length == 0
       
     - name: Set VM list from all VMs
       set_fact:
         target_vms: "{{ all_vms.stdout | from_json }}"
-      when: vm_names | length == 0
+      when: (vm_names | default([])) | length == 0
       
     - name: Set VM list from provided names
       set_fact:
-        target_vms: "{{ vm_names }}"
-      when: vm_names | length > 0
+        target_vms: "{{ vm_names | default([]) }}"
+      when: (vm_names | default([])) | length > 0
       
     - name: Display VMs to be snapshotted
       debug:
