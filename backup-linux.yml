@@ -11,6 +11,13 @@
   # backup_content can be set in AWX as an extra variable
   #   - true: Backup website content files (default: false)
   #   - false: Only backup nginx configuration
+  #
+  # nginx_version can be set in AWX as an extra variable
+  #   - If specified: Install specific version (e.g., "1.20.1", "1.18.0-2.el7")
+  #   - If not set: Install from default repository (not necessarily latest)
+  #   - Examples:
+  #     - nginx_version: "1.20.1"
+  #     - nginx_version: "1.18.0-2.el7"
 
   tasks:
     - name: Get formatted date and time
@@ -71,15 +78,102 @@
             false
           {%- endif -%}
     
-    - name: Fail if nginx is not installed
-      fail:
-        msg: "Nginx is not installed on this host. Please install nginx before running backup."
+    - name: Check if EPEL repository is available (for Oracle Linux)
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf repolist enabled | grep -i epel || echo "EPEL:NotEnabled"
+        elif command -v yum &> /dev/null; then
+            yum repolist enabled | grep -i epel || echo "EPEL:NotEnabled"
+        else
+            echo "EPEL:Unknown"
+        fi
+      register: epel_check
+      ignore_errors: yes
+      changed_when: false
       when: not nginx_installed
+    
+    - name: Enable EPEL repository if needed
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf install -y epel-release || true
+        elif command -v yum &> /dev/null; then
+            yum install -y epel-release || true
+        fi
+      register: epel_install
+      ignore_errors: yes
+      when: 
+        - not nginx_installed
+        - "'EPEL:NotEnabled' in epel_check.stdout | default('')"
+    
+    - name: Install nginx (specific version if specified)
+      shell: |
+        if command -v dnf &> /dev/null; then
+            if [ -n "{{ nginx_version | default('') }}" ]; then
+                dnf install -y "nginx-{{ nginx_version }}" || dnf install -y nginx
+            else
+                dnf install -y nginx
+            fi
+        elif command -v yum &> /dev/null; then
+            if [ -n "{{ nginx_version | default('') }}" ]; then
+                yum install -y "nginx-{{ nginx_version }}" || yum install -y nginx
+            else
+                yum install -y nginx
+            fi
+        else
+            echo "ERROR: No package manager found (dnf/yum)"
+            exit 1
+        fi
+      register: nginx_install
+      when: not nginx_installed
+    
+    - name: Display nginx installation result
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Installation"
+          - "Status: {{ 'Installed' if nginx_install is succeeded else 'Failed' }}"
+          {%- if nginx_version is defined and nginx_version != '' -%}
+          - "Version Requested: {{ nginx_version }}"
+          {%- else -%}
+          - "Version: Installed from default repository"
+          {%- endif -%}
+          - "=========================================="
+      when: not nginx_installed
+    
+    - name: Verify nginx installation after install
+      shell: |
+        if rpm -q nginx &> /dev/null; then
+            echo "INSTALLED:Yes"
+            rpm -qi nginx | grep -E "^Version|^Release|^Name" | head -3
+        else
+            echo "INSTALLED:No"
+        fi
+      register: nginx_verify_after_install
+      ignore_errors: yes
+      changed_when: false
+      when: not nginx_installed
+    
+    - name: Update nginx installation status after install
+      set_fact:
+        nginx_installed: >-
+          {%- if 'INSTALLED:Yes' in nginx_verify_after_install.stdout | default('') -%}
+            true
+          {%- else -%}
+            false
+          {%- endif -%}
+      when: not nginx_installed
+    
+    - name: Fail if nginx installation failed
+      fail:
+        msg: "Failed to install nginx. Please check the installation logs."
+      when: 
+        - not nginx_installed
+        - nginx_install is failed
     
     - name: Get nginx version
       shell: |
         nginx -v 2>&1 | head -1
-      register: nginx_version
+      register: nginx_version_output
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
@@ -134,7 +228,7 @@
           - "Time: {{ backup_time }}"
           - "Host: {{ inventory_hostname }}"
           - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
-          - "Nginx Version: {{ nginx_version.stdout | default('Unknown') }}"
+          - "Nginx Version: {{ nginx_version_output.stdout | default('Unknown') }}"
           - "Service Status: {{ nginx_service_status.stdout | default('Unknown') }}"
           - "Service Enabled: {{ nginx_service_enabled.stdout | default('Unknown') }}"
           - "Backup Content: {{ backup_content | default(false) }}"
@@ -298,7 +392,7 @@
           Backup Location: {{ backup_folder }}
           
           Nginx Information:
-          - Version: {{ nginx_version.stdout | default('Unknown') }}
+          - Version: {{ nginx_version_output.stdout | default('Unknown') }}
           - Service Status: {{ nginx_service_status.stdout | default('Unknown') }}
           - Service Enabled: {{ nginx_service_enabled.stdout | default('Unknown') }}
           - Configuration Directory: {{ nginx_config_dir.stdout | default('Unknown') }}
