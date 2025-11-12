@@ -132,13 +132,23 @@
           - "=========================================="
           - "Nginx Installation"
           - "Status: {{ 'Installed' if nginx_install is succeeded else 'Failed' }}"
-          {%- if nginx_version is defined and nginx_version != '' -%}
-          - "Version Requested: {{ nginx_version }}"
-          {%- else -%}
-          - "Version: Installed from default repository"
-          {%- endif -%}
           - "=========================================="
       when: not nginx_installed
+    
+    - name: Display nginx version information
+      debug:
+        msg: "Version Requested: {{ nginx_version }}"
+      when: 
+        - not nginx_installed
+        - nginx_version is defined
+        - nginx_version != ''
+    
+    - name: Display default repository installation message
+      debug:
+        msg: "Version: Installed from default repository"
+      when: 
+        - not nginx_installed
+        - nginx_version is not defined or nginx_version == ''
     
     - name: Verify nginx installation after install
       shell: |
