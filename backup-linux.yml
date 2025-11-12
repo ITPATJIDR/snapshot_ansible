@@ -1,0 +1,371 @@
+---
+- name: Backup Nginx Service on Oracle Linux
+  hosts: all
+  gather_facts: yes
+  # backup_path can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - backup_path: "/opt/backups"
+  #   - backup_path: "/tmp/nginx_backups"
+  #   - If not set, defaults to: /opt/nginx_backups
+  #
+  # backup_content can be set in AWX as an extra variable
+  #   - true: Backup website content files (default: false)
+  #   - false: Only backup nginx configuration
+
+  tasks:
+    - name: Get formatted date and time
+      set_fact:
+        backup_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        backup_time: "{{ ansible_date_time.time }}"
+        backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+    
+    - name: Set backup path
+      set_fact:
+        backup_base_path: "{{ backup_path | default('/opt/nginx_backups') }}"
+    
+    - name: Set backup folder with timestamp
+      set_fact:
+        backup_folder: "{{ backup_base_path }}/nginx_backup_{{ backup_timestamp }}"
+    
+    - name: Check if nginx is installed (using rpm)
+      shell: |
+        if rpm -q nginx &> /dev/null; then
+            echo "INSTALLED:Yes"
+            rpm -qi nginx | grep -E "^Version|^Release|^Name" | head -3
+        else
+            echo "INSTALLED:No"
+        fi
+      register: nginx_check_rpm
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check if nginx is installed (using systemctl)
+      shell: |
+        if systemctl list-unit-files | grep -q "^nginx.service"; then
+            echo "SERVICE:Found"
+        else
+            echo "SERVICE:NotFound"
+        fi
+      register: nginx_check_service
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check if nginx binary exists
+      shell: |
+        if command -v nginx &> /dev/null; then
+            echo "BINARY:Found"
+            nginx -v 2>&1
+        else
+            echo "BINARY:NotFound"
+        fi
+      register: nginx_check_binary
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Determine nginx installation status
+      set_fact:
+        nginx_installed: >-
+          {%- if 'INSTALLED:Yes' in nginx_check_rpm.stdout or 'SERVICE:Found' in nginx_check_service.stdout or 'BINARY:Found' in nginx_check_binary.stdout -%}
+            true
+          {%- else -%}
+            false
+          {%- endif -%}
+    
+    - name: Fail if nginx is not installed
+      fail:
+        msg: "Nginx is not installed on this host. Please install nginx before running backup."
+      when: not nginx_installed
+    
+    - name: Get nginx version
+      shell: |
+        nginx -v 2>&1 | head -1
+      register: nginx_version
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Get nginx package information
+      shell: |
+        rpm -qi nginx 2>/dev/null | grep -E "^Name|^Version|^Release|^Install Date|^Build Date" || echo "Package info not available"
+      register: nginx_package_info
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Check nginx service status
+      shell: |
+        systemctl is-active nginx 2>/dev/null || echo "inactive"
+      register: nginx_service_status
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Check nginx service enabled status
+      shell: |
+        systemctl is-enabled nginx 2>/dev/null || echo "disabled"
+      register: nginx_service_enabled
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Get nginx configuration test result
+      shell: |
+        nginx -t 2>&1
+      register: nginx_config_test
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Create backup directory
+      file:
+        path: "{{ backup_folder }}"
+        state: directory
+        mode: '0755'
+      register: backup_dir_result
+      when: nginx_installed
+    
+    - name: Display backup information
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Backup Information"
+          - "Backup Path: {{ backup_folder }}"
+          - "Date: {{ backup_date }}"
+          - "Time: {{ backup_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Nginx Version: {{ nginx_version.stdout | default('Unknown') }}"
+          - "Service Status: {{ nginx_service_status.stdout | default('Unknown') }}"
+          - "Service Enabled: {{ nginx_service_enabled.stdout | default('Unknown') }}"
+          - "Backup Content: {{ backup_content | default(false) }}"
+          - "=========================================="
+      when: nginx_installed
+    
+    - name: Find nginx configuration directory
+      shell: |
+        # Try common nginx config locations
+        if [ -d /etc/nginx ]; then
+            echo "/etc/nginx"
+        elif [ -d /usr/local/nginx/conf ]; then
+            echo "/usr/local/nginx/conf"
+        else
+            # Try to find from nginx -t output
+            nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | xargs dirname 2>/dev/null || echo "/etc/nginx"
+        fi
+      register: nginx_config_dir
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Get nginx main configuration file path
+      shell: |
+        nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | head -1 || echo "/etc/nginx/nginx.conf"
+      register: nginx_main_config
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Backup nginx main configuration file
+      copy:
+        src: "{{ nginx_main_config.stdout }}"
+        dest: "{{ backup_folder }}/nginx.conf"
+        remote_src: yes
+        mode: '0644'
+      register: main_config_backup
+      when: nginx_installed
+    
+    - name: Backup entire nginx configuration directory
+      shell: |
+        config_dir="{{ nginx_config_dir.stdout }}"
+        backup_dir="{{ backup_folder }}/etc_nginx"
+        
+        if [ -d "$config_dir" ]; then
+            mkdir -p "$backup_dir"
+            cp -r "$config_dir"/* "$backup_dir/" 2>/dev/null || true
+            echo "SUCCESS: Configuration directory backed up from $config_dir"
+        else
+            echo "WARNING: Configuration directory $config_dir not found"
+        fi
+      register: config_dir_backup
+      ignore_errors: yes
+      when: nginx_installed
+    
+    - name: Backup nginx systemd service file
+      shell: |
+        service_files=(
+          "/usr/lib/systemd/system/nginx.service"
+          "/etc/systemd/system/nginx.service"
+          "/lib/systemd/system/nginx.service"
+        )
+        
+        for service_file in "${service_files[@]}"; do
+            if [ -f "$service_file" ]; then
+                cp "$service_file" "{{ backup_folder }}/nginx.service"
+                echo "SUCCESS: Service file backed up from $service_file"
+                exit 0
+            fi
+        done
+        
+        echo "WARNING: Nginx service file not found in standard locations"
+      register: service_file_backup
+      ignore_errors: yes
+      when: nginx_installed
+    
+    - name: Get nginx process information
+      shell: |
+        ps aux | grep -E "nginx: (master|worker)" | grep -v grep | head -5 || echo "No nginx processes found"
+      register: nginx_processes
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Get nginx listening ports
+      shell: |
+        netstat -tlnp 2>/dev/null | grep nginx || ss -tlnp 2>/dev/null | grep nginx || echo "Unable to determine listening ports"
+      register: nginx_listening_ports
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Get list of nginx virtual hosts/sites
+      shell: |
+        config_dir="{{ nginx_config_dir.stdout }}"
+        sites=()
+        
+        # Check for sites-available and sites-enabled (Debian-style)
+        if [ -d "$config_dir/sites-available" ]; then
+            for site in "$config_dir/sites-available"/*; do
+                if [ -f "$site" ]; then
+                    sites+=("$(basename "$site")")
+                fi
+            done
+        fi
+        
+        # Check for conf.d directory (RHEL/Oracle Linux style)
+        if [ -d "$config_dir/conf.d" ]; then
+            for conf in "$config_dir/conf.d"/*.conf; do
+                if [ -f "$conf" ]; then
+                    sites+=("conf.d/$(basename "$conf")")
+                fi
+            done
+        fi
+        
+        # Output as JSON array
+        printf '%s\n' "${sites[@]}" | jq -R . | jq -s . 2>/dev/null || printf '%s\n' "${sites[@]}"
+      register: nginx_sites
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Backup website content files (if requested)
+      shell: |
+        config_dir="{{ nginx_config_dir.stdout }}"
+        backup_dir="{{ backup_folder }}/website_content"
+        
+        # Extract document root paths from nginx config
+        doc_roots=$(grep -r "root " "$config_dir"/*.conf "$config_dir"/conf.d/*.conf 2>/dev/null | \
+                    grep -v "^#" | awk '{print $2}' | sed 's/;//' | sort -u)
+        
+        if [ -n "$doc_roots" ]; then
+            mkdir -p "$backup_dir"
+            echo "$doc_roots" | while read -r doc_root; do
+                if [ -d "$doc_root" ]; then
+                    site_name=$(echo "$doc_root" | tr '/' '_' | sed 's/^_//')
+                    cp -r "$doc_root" "$backup_dir/$site_name" 2>/dev/null || true
+                    echo "Backed up: $doc_root -> $backup_dir/$site_name"
+                fi
+            done
+            echo "SUCCESS: Website content backed up"
+        else
+            echo "INFO: No document roots found or content backup not requested"
+        fi
+      register: content_backup
+      ignore_errors: yes
+      when: 
+        - nginx_installed
+        - backup_content | default(false) | bool
+    
+    - name: Create nginx backup summary file
+      copy:
+        content: |
+          Nginx Backup Summary
+          ===================
+          Date: {{ backup_date }}
+          Time: {{ backup_time }}
+          Host: {{ inventory_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          
+          Backup Location: {{ backup_folder }}
+          
+          Nginx Information:
+          - Version: {{ nginx_version.stdout | default('Unknown') }}
+          - Service Status: {{ nginx_service_status.stdout | default('Unknown') }}
+          - Service Enabled: {{ nginx_service_enabled.stdout | default('Unknown') }}
+          - Configuration Directory: {{ nginx_config_dir.stdout | default('Unknown') }}
+          - Main Config File: {{ nginx_main_config.stdout | default('Unknown') }}
+          
+          Package Information:
+          {{ nginx_package_info.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
+          
+          Configuration Test Result:
+          {{ nginx_config_test.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
+          
+          Nginx Processes:
+          {{ nginx_processes.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
+          
+          Listening Ports:
+          {{ nginx_listening_ports.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
+          
+          Virtual Hosts/Sites Found:
+          {% if nginx_sites.stdout is defined and nginx_sites.stdout != '' %}
+          {{ nginx_sites.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
+          {% else %}
+            N/A
+          {% endif %}
+          
+          Files Backed Up:
+          - nginx.conf (main configuration)
+          - etc_nginx/ (entire configuration directory)
+          - nginx.service (systemd service file)
+          {% if backup_content | default(false) %}
+          - website_content/ (website content files)
+          {% endif %}
+          
+          Backup completed successfully.
+        dest: "{{ backup_folder }}/backup_summary.txt"
+        mode: '0644'
+      register: summary_result
+      ignore_errors: yes
+      failed_when: false
+      when: nginx_installed
+    
+    - name: Create backup manifest (list of all files)
+      shell: |
+        find "{{ backup_folder }}" -type f -exec ls -lh {} \; | awk '{print $9, $5}' > "{{ backup_folder }}/backup_manifest.txt"
+        echo "SUCCESS: Backup manifest created"
+      register: manifest_result
+      ignore_errors: yes
+      when: nginx_installed
+    
+    - name: Display backup results
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Backup Completed Successfully"
+          - "Backup Location: {{ backup_folder }}"
+          - "Main Config: {{ 'Backed up' if main_config_backup is succeeded else 'Failed' }}"
+          - "Config Directory: {{ 'Backed up' if config_dir_backup is succeeded else 'Failed' }}"
+          - "Service File: {{ 'Backed up' if service_file_backup is succeeded else 'Failed' }}"
+          {% if backup_content | default(false) %}
+          - "Website Content: {{ 'Backed up' if content_backup is succeeded else 'Not backed up' }}"
+          {% endif %}
+          - "=========================================="
+      when: nginx_installed
+    
+    - name: Display nginx sites found
+      debug:
+        msg: "{{ nginx_sites.stdout_lines }}"
+      when: 
+        - nginx_installed
+        - nginx_sites.stdout is defined
+        - nginx_sites.stdout != ''
