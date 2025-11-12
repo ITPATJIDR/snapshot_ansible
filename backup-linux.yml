@@ -356,11 +356,15 @@
           - "Main Config: {{ 'Backed up' if main_config_backup is succeeded else 'Failed' }}"
           - "Config Directory: {{ 'Backed up' if config_dir_backup is succeeded else 'Failed' }}"
           - "Service File: {{ 'Backed up' if service_file_backup is succeeded else 'Failed' }}"
-          {% if backup_content | default(false) %}
-          - "Website Content: {{ 'Backed up' if content_backup is succeeded else 'Not backed up' }}"
-          {% endif %}
           - "=========================================="
       when: nginx_installed
+    
+    - name: Display website content backup result
+      debug:
+        msg: "Website Content: {{ 'Backed up' if content_backup is succeeded else 'Not backed up' }}"
+      when: 
+        - nginx_installed
+        - backup_content | default(false) | bool
     
     - name: Display nginx sites found
       debug:
