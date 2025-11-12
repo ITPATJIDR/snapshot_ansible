@@ -12,6 +12,14 @@
   #   - Examples:
   #     - nginx_version_target: "1.20.1"
   #     - nginx_version_target: "1.18.0-2.el7"
+  #
+  # use_nginx_official_repo can be set in AWX as an extra variable
+  #   - true: Use official NGINX repository (gets latest stable versions like 1.26.x)
+  #   - false: Use default Oracle Linux repository (default: false)
+  #   - When enabled, will remove old nginx and set up official repo
+  #   - Examples:
+  #     - use_nginx_official_repo: true
+  #     - use_nginx_official_repo: false
 
   tasks:
     - name: Get formatted date and time
@@ -112,8 +120,142 @@
           - "Nginx Version (Before): {{ nginx_version_before.stdout | default('Unknown') }}"
           - "Install Updates: {{ install_updates | default(false) }}"
           - "Target Version: {{ nginx_version_target | default('Latest in repository') }}"
+          - "Use Official Repo: {{ use_official_repo | default(false) }}"
           - "=========================================="
       when: nginx_installed
+    
+    - name: Check if using official NGINX repository
+      set_fact:
+        use_official_repo: "{{ use_nginx_official_repo | default(false) | bool }}"
+      when: nginx_installed
+    
+    - name: Remove old nginx package if switching to official repo
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf remove -y nginx || true
+        elif command -v yum &> /dev/null; then
+            yum remove -y nginx || true
+        fi
+      register: remove_old_nginx
+      when: 
+        - nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
+    - name: Detect OS release version
+      shell: |
+        if [ -f /etc/oracle-release ]; then
+            cat /etc/oracle-release | grep -oE '[0-9]+\.[0-9]+' | head -1
+        elif [ -f /etc/redhat-release ]; then
+            cat /etc/redhat-release | grep -oE '[0-9]+\.[0-9]+' | head -1
+        elif [ -f /etc/os-release ]; then
+            grep VERSION_ID /etc/os-release | cut -d'"' -f2 | cut -d'.' -f1
+        else
+            echo "8"
+        fi
+      register: os_release_version
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - nginx_installed
+        - use_official_repo
+    
+    - name: Detect system architecture
+      shell: |
+        uname -m
+      register: system_arch
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - nginx_installed
+        - use_official_repo
+    
+    - name: Create official NGINX repository file
+      copy:
+        content: |
+          [nginx-stable]
+          name=nginx stable repo
+          baseurl=http://nginx.org/packages/centos/{{ os_release_version.stdout | default('8') }}/$basearch/
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://nginx.org/keys/nginx_signing.key
+          module_hotfixes=true
+        dest: /etc/yum.repos.d/nginx.repo
+        mode: '0644'
+      register: nginx_repo_created
+      when: 
+        - nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
+    - name: Import NGINX GPG key
+      shell: |
+        rpm --import https://nginx.org/keys/nginx_signing.key || true
+      register: nginx_gpg_import
+      ignore_errors: yes
+      when: 
+        - nginx_installed
+        - use_official_repo
+    
+    - name: Update package cache after adding NGINX repo
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf makecache || true
+        elif command -v yum &> /dev/null; then
+            yum makecache || true
+        fi
+      register: update_cache_after_repo
+      ignore_errors: yes
+      when: 
+        - nginx_installed
+        - use_official_repo
+    
+    - name: Install nginx from official repository
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf install -y nginx
+        elif command -v yum &> /dev/null; then
+            yum install -y nginx
+        else
+            echo "ERROR: No package manager found (dnf/yum)"
+            exit 1
+        fi
+      register: nginx_install_from_official
+      when: 
+        - nginx_installed
+        - use_official_repo
+        - remove_old_nginx is defined
+      ignore_errors: yes
+    
+    - name: Verify nginx installation from official repo
+      shell: |
+        if rpm -q nginx &> /dev/null; then
+            echo "INSTALLED:Yes"
+            nginx -v 2>&1 | head -1
+            rpm -qi nginx | grep -E "^Version|^Release|^Name" | head -3
+        else
+            echo "INSTALLED:No"
+        fi
+      register: nginx_verify_official
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - nginx_installed
+        - use_official_repo
+        - nginx_install_from_official is defined
+    
+    - name: Display official repo installation result
+      debug:
+        msg:
+          - "=========================================="
+          - "NGINX Official Repository Setup"
+          - "Status: {{ 'Installed' if nginx_verify_official.stdout is defined and 'INSTALLED:Yes' in nginx_verify_official.stdout else 'Failed' }}"
+          - "Version: {{ nginx_verify_official.stdout_lines[1] | default('Unknown') if nginx_verify_official.stdout is defined else 'Unknown' }}"
+          - "=========================================="
+      when: 
+        - nginx_installed
+        - use_official_repo
+        - nginx_verify_official is defined
     
     - name: Update package cache
       shell: |
@@ -124,7 +266,9 @@
         fi
       register: update_cache
       ignore_errors: yes
-      when: nginx_installed
+      when: 
+        - nginx_installed
+        - not use_official_repo
     
     - name: Get current installed nginx package version
       shell: |
@@ -239,7 +383,7 @@
         - install_updates | default(false) | bool
         - not updates_available
     
-    - name: Install nginx updates
+    - name: Install nginx updates (from default repo)
       shell: |
         if command -v dnf &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
@@ -262,6 +406,32 @@
         - nginx_installed
         - install_updates | default(false) | bool
         - updates_available
+        - not use_official_repo
+      ignore_errors: yes
+    
+    - name: Install nginx updates (from official repo)
+      shell: |
+        if command -v dnf &> /dev/null; then
+            if [ -n "{{ nginx_version_target | default('') }}" ]; then
+                dnf upgrade -y "nginx-{{ nginx_version_target }}" || dnf upgrade -y nginx
+            else
+                dnf upgrade -y nginx
+            fi
+        elif command -v yum &> /dev/null; then
+            if [ -n "{{ nginx_version_target | default('') }}" ]; then
+                yum upgrade -y "nginx-{{ nginx_version_target }}" || yum upgrade -y nginx
+            else
+                yum upgrade -y nginx
+            fi
+        else
+            echo "ERROR: No package manager found (dnf/yum)"
+            exit 1
+        fi
+      register: nginx_upgrade
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
+        - use_official_repo
       ignore_errors: yes
     
     - name: Display upgrade result
