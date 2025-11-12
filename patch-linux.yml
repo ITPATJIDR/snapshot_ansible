@@ -86,7 +86,7 @@
     
     - name: Get nginx service status before patching
       shell: |
-        systemctl is-active nginx 2>/dev/null || echo "inactive"
+        systemctl is-active nginx 2>/dev/null | head -1 || echo "inactive"
       register: nginx_service_status_before
       ignore_errors: yes
       changed_when: false
@@ -126,30 +126,38 @@
       ignore_errors: yes
       when: nginx_installed
     
+    - name: Get current installed nginx package version
+      shell: |
+        rpm -q nginx
+      register: nginx_current_package
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Get current installed nginx version (parsed)
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' nginx 2>/dev/null || echo "Unknown"
+      register: nginx_current_version_parsed
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
     - name: Check for available nginx updates
       shell: |
         if command -v dnf &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
                 dnf list available nginx-{{ nginx_version_target }} 2>/dev/null | grep -E "^nginx" || echo "TARGET_VERSION:NotAvailable"
             else
-                dnf list available nginx 2>/dev/null | grep -E "^nginx" || echo "UPDATES:None"
+                dnf check-update nginx 2>/dev/null | grep -E "^nginx" || echo "UPDATES:None"
             fi
         elif command -v yum &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
                 yum list available nginx-{{ nginx_version_target }} 2>/dev/null | grep -E "^nginx" || echo "TARGET_VERSION:NotAvailable"
             else
-                yum list available nginx 2>/dev/null | grep -E "^nginx" || echo "UPDATES:None"
+                yum check-update nginx 2>/dev/null | grep -E "^nginx" || echo "UPDATES:None"
             fi
         fi
       register: nginx_updates_available
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
-    - name: Get current installed nginx package version
-      shell: |
-        rpm -q nginx
-      register: nginx_current_package
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
@@ -168,12 +176,30 @@
       changed_when: false
       when: nginx_installed
     
+    - name: Get latest available nginx version
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf list available nginx 2>/dev/null | tail -n +2 | awk '{print $2}' | head -1
+        elif command -v yum &> /dev/null; then
+            yum list available nginx 2>/dev/null | tail -n +2 | awk '{print $2}' | head -1
+        else
+            echo ""
+        fi
+      register: nginx_latest_version
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
     - name: Determine if updates are available
       set_fact:
         updates_available: >-
+          {%- set current_ver = nginx_current_version_parsed.stdout | default('') -%}
+          {%- set latest_ver = nginx_latest_version.stdout | default('') -%}
           {%- if 'UPDATES:None' in nginx_updates_available.stdout | default('') or 'TARGET_VERSION:NotAvailable' in nginx_updates_available.stdout | default('') -%}
             false
-          {%- elif nginx_updates_available.stdout is defined and nginx_updates_available.stdout != '' and 'nginx' in nginx_updates_available.stdout -%}
+          {%- elif latest_ver != '' and current_ver != '' and latest_ver != current_ver -%}
+            true
+          {%- elif nginx_updates_available.stdout is defined and nginx_updates_available.stdout != '' and 'nginx' in nginx_updates_available.stdout and 'UPDATES:None' not in nginx_updates_available.stdout -%}
             true
           {%- else -%}
             false
@@ -198,6 +224,20 @@
         - nginx_available_versions.stdout is defined
         - nginx_available_versions.stdout != ''
         - updates_available
+    
+    - name: Display warning before upgrade if no updates available
+      debug:
+        msg:
+          - "=========================================="
+          - "WARNING: No updates available for nginx"
+          - "Current version: {{ nginx_current_version_parsed.stdout | default('Unknown') }}"
+          - "Latest available: {{ nginx_latest_version.stdout | default('Unknown') }}"
+          - "Skipping upgrade..."
+          - "=========================================="
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
+        - not updates_available
     
     - name: Install nginx updates
       shell: |
@@ -229,17 +269,26 @@
         msg:
           - "=========================================="
           - "Nginx Upgrade Result"
-          - "Status: {{ 'Upgraded' if nginx_upgrade is succeeded else 'Failed' }}"
+          - "Status: {{ 'Upgraded' if (nginx_upgrade is succeeded and nginx_upgrade is defined) else 'Skipped (no updates available)' if (install_updates | default(false) and not updates_available) else 'Failed' if (nginx_upgrade is defined and nginx_upgrade is failed) else 'Not attempted' }}"
           - "=========================================="
       when: 
         - nginx_installed
         - install_updates | default(false) | bool
-        - nginx_upgrade is defined
     
     - name: Get nginx version after patching
       shell: |
         nginx -v 2>&1 | head -1
       register: nginx_version_after
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
+    
+    - name: Get nginx package version after patching
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' nginx 2>/dev/null || echo "Unknown"
+      register: nginx_version_after_parsed
       ignore_errors: yes
       changed_when: false
       when: 
@@ -256,6 +305,33 @@
         - nginx_installed
         - install_updates | default(false) | bool
     
+    - name: Set version_changed to false if no upgrade was attempted
+      set_fact:
+        version_changed: false
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
+        - not updates_available
+    
+    - name: Determine if version actually changed
+      set_fact:
+        version_changed: >-
+          {%- if nginx_version_after_parsed.stdout is defined and nginx_current_version_parsed.stdout is defined -%}
+            {%- if nginx_version_after_parsed.stdout != nginx_current_version_parsed.stdout -%}
+              true
+            {%- else -%}
+              false
+            {%- endif -%}
+          {%- else -%}
+            false
+          {%- endif -%}
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
+        - updates_available
+        - nginx_version_after_parsed is defined
+        - nginx_current_version_parsed is defined
+    
     - name: Verify nginx configuration after patching
       shell: |
         nginx -t 2>&1
@@ -268,7 +344,7 @@
     
     - name: Check nginx service status after patching
       shell: |
-        systemctl is-active nginx 2>/dev/null || echo "inactive"
+        systemctl is-active nginx 2>/dev/null | head -1 || echo "inactive"
       register: nginx_service_status_after
       ignore_errors: yes
       changed_when: false
@@ -289,7 +365,7 @@
     
     - name: Verify nginx is running after restart
       shell: |
-        systemctl is-active nginx 2>/dev/null || echo "inactive"
+        systemctl is-active nginx 2>/dev/null | head -1 || echo "inactive"
       register: nginx_service_status_final
       ignore_errors: yes
       changed_when: false
@@ -309,7 +385,10 @@
           - "Nginx Version (Before): {{ nginx_version_before.stdout | default('Unknown') }}"
           - "Nginx Version (After): {{ nginx_version_after.stdout | default('Unknown') if (install_updates | default(false)) else 'N/A (updates not installed)' }}"
           - "Updates Available: {{ 'Yes' if updates_available else 'No' }}"
-          - "Updates Installed: {{ 'Yes' if (install_updates | default(false) and nginx_upgrade is succeeded) else 'No' if install_updates | default(false) else 'N/A (check only mode)' }}"
+          - "Updates Installed: {{ 'Yes' if (install_updates | default(false) and nginx_upgrade is succeeded and version_changed | default(false)) else 'No (version unchanged)' if (install_updates | default(false) and nginx_upgrade is succeeded and not version_changed | default(true)) else 'No' if install_updates | default(false) else 'N/A (check only mode)' }}"
+          - "Version Changed: {{ 'Yes' if (version_changed | default(false)) else 'No' if install_updates | default(false) else 'N/A' }}"
+          - "Current Package: {{ nginx_current_version_parsed.stdout | default('Unknown') }}"
+          - "After Package: {{ nginx_version_after_parsed.stdout | default('Unknown') if install_updates | default(false) else 'N/A' }}"
           - "Config Test (Before): {{ 'Passed' if 'successful' in nginx_config_test_before.stdout | default('') or 'syntax is ok' in nginx_config_test_before.stdout | default('') else 'Failed/Unknown' }}"
           - "Config Test (After): {{ 'Passed' if ('successful' in nginx_config_test_after.stdout | default('') or 'syntax is ok' in nginx_config_test_after.stdout | default('')) and install_updates | default(false) else 'N/A' if not install_updates | default(false) else 'Failed/Unknown' }}"
           - "Service Status (Before): {{ nginx_service_status_before.stdout | default('Unknown') }}"
