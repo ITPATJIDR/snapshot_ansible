@@ -15,13 +15,13 @@
 
     - name: Restore VM from snapshot (this may take several minutes)
       win_command: >
-      powershell.exe -NoLogo -NoProfile -Command
-      "$success = @{ status = 'SUCCESS' } | ConvertTo-Json -Compress;
-       $fail    = @{ status = 'FAILED' }  | ConvertTo-Json -Compress;
-       Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null;
-       if ($?) { Write-Output $success } else { Write-Output $fail; exit 1 }"
+        powershell.exe -NoLogo -NoProfile -Command
+        "$success = @{ status = 'SUCCESS' } | ConvertTo-Json -Compress;
+        $fail    = @{ status = 'FAILED' }  | ConvertTo-Json -Compress;
+        Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null;
+        if ($?) { Write-Output $success } else { Write-Output $fail; exit 1 }"
       register: restore_result
-      changed_when: false
+      changed_when: '"status":"SUCCESS"' in (restore_result.stdout | default(''))
 
     - name: debug
       ansible.
