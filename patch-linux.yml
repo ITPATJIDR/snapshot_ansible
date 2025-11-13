@@ -132,6 +132,18 @@
         use_official_repo: "{{ use_nginx_official_repo | default(false) | bool }}"
       when: nginx_installed
     
+    - name: Disable and reset nginx module stream (Oracle Linux 8+)
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf module disable -y nginx 2>/dev/null || true
+            dnf module reset -y nginx 2>/dev/null || true
+        fi
+      register: disable_nginx_module
+      when: 
+        - nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
     - name: Remove old nginx package if switching to official repo
       shell: |
         if command -v dnf &> /dev/null; then
@@ -145,13 +157,25 @@
         - use_official_repo
       ignore_errors: yes
     
-    - name: Detect OS release version
+    - name: Remove existing broken nginx repository files
+      shell: |
+        rm -f /etc/yum.repos.d/nginx*.repo 2>/dev/null || true
+      register: remove_old_repo
+      when: 
+        - nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
+    - name: Detect OS release version (major version only)
       shell: |
         if [ -f /etc/oracle-release ]; then
-            cat /etc/oracle-release | grep -oE '[0-9]+\.[0-9]+' | head -1
+            # Extract ONLY major version (8.10 -> 8, 9.3 -> 9)
+            cat /etc/oracle-release | grep -oE '[0-9]+' | head -1
         elif [ -f /etc/redhat-release ]; then
-            cat /etc/redhat-release | grep -oE '[0-9]+\.[0-9]+' | head -1
+            # Extract ONLY major version
+            cat /etc/redhat-release | grep -oE '[0-9]+' | head -1
         elif [ -f /etc/os-release ]; then
+            # Extract ONLY major version
             grep VERSION_ID /etc/os-release | cut -d'"' -f2 | cut -d'.' -f1
         else
             echo "8"
@@ -169,6 +193,20 @@
       register: system_arch
       ignore_errors: yes
       changed_when: false
+      when: 
+        - nginx_installed
+        - use_official_repo
+    
+    - name: Display nginx official repository configuration
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Official Repository Setup"
+          - "OS Major Version: {{ os_release_version.stdout | default('8') }}"
+          - "Architecture: {{ system_arch.stdout | default('x86_64') }}"
+          - "Repository URL: http://nginx.org/packages/centos/{{ os_release_version.stdout | default('8') }}/$basearch/"
+          - "Note: Using major version only (e.g., 8 not 8.10)"
+          - "=========================================="
       when: 
         - nginx_installed
         - use_official_repo
