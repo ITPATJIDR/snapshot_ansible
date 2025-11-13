@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: no
   vars:
-    skip_verify: false
+    skip_verify: true 
 
   tasks:
     - name: Validate required variables
