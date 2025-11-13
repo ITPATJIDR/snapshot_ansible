@@ -15,7 +15,8 @@
         Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false
         Write-Output "Restore completed successfully"
       register: restore_result
-      no_log: true
+      changed_when: restore_result.rc == 0
+      failed_when: restore_result.rc != 0
       
     - name: Display result
       debug:
