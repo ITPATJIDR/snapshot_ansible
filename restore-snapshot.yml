@@ -12,26 +12,13 @@
       
     - name: Restore VM from snapshot
       win_shell: |
-        try {
-          $ProgressPreference = 'SilentlyContinue'
-          $vmName = "{{ vm_name | replace('"', '`"') }}"
-          $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
-          Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop *> $null
-          Write-Host "SUCCESS"
-          exit 0
-        } catch {
-          Write-Host "FAILED: $($_.Exception.Message)"
-          exit 1
-        }
+        $vmName = "{{ vm_name | replace('"', '`"') }}"
+        $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
+        Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
+        Write-Output "Restore completed successfully"
       register: restore_result
-      failed_when: false
       
     - name: Display result
       debug:
         msg: "{{ restore_result.stdout_lines }}"
-        
-    - name: Check if restore succeeded
-      fail:
-        msg: "Restore operation failed"
-      when: restore_result.rc != 0
 

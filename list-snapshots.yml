@@ -8,57 +8,41 @@
   tasks:
     - name: List all snapshots for all VMs
       win_shell: |
-        try {
-          $ProgressPreference = 'SilentlyContinue'
-          $output = @()
-          Get-VM -ErrorAction SilentlyContinue | ForEach-Object {
-              $vmName = $_.Name
-              $snapshots = Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue
-              foreach ($snapshot in $snapshots) {
-                  $output += "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-              }
-          }
-          if ($output.Count -eq 0) {
-              Write-Host "No snapshots found"
-          } else {
-              Write-Host "VM | Snapshot Name | Creation Time"
-              Write-Host "-----------------------------------------------------------"
-              $output | ForEach-Object { Write-Host $_ }
-          }
-          exit 0
-        } catch {
-          Write-Host "FAILED: $($_.Exception.Message)"
-          exit 1
+        $output = @()
+        Get-VM | ForEach-Object {
+            $vmName = $_.Name
+            $snapshots = Get-VMSnapshot -VMName $vmName
+            foreach ($snapshot in $snapshots) {
+                $output += "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+            }
+        }
+        if ($output.Count -eq 0) {
+            Write-Output "No snapshots found"
+        } else {
+            Write-Output "VM | Snapshot Name | Creation Time"
+            Write-Output "-----------------------------------------------------------"
+            $output | ForEach-Object { Write-Output $_ }
         }
       register: all_snapshots
       when: vm_name == ""
       changed_when: false
-      failed_when: false
       
     - name: List snapshots for specific VM
       win_shell: |
-        try {
-          $ProgressPreference = 'SilentlyContinue'
-          $vmName = "{{ vm_name | replace('"', '`"') }}"
-          $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction Stop)
-          if ($snapshots.Count -eq 0) {
-              Write-Host "No snapshots found for VM: $vmName"
-          } else {
-              Write-Host "VM | Snapshot Name | Creation Time"
-              Write-Host "-----------------------------------------------------------"
-              foreach ($snapshot in $snapshots) {
-                  Write-Host "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-              }
-          }
-          exit 0
-        } catch {
-          Write-Host "FAILED: $($_.Exception.Message)"
-          exit 1
+        $vmName = "{{ vm_name | replace('"', '`"') }}"
+        $snapshots = @(Get-VMSnapshot -VMName $vmName)
+        if ($snapshots.Count -eq 0) {
+            Write-Output "No snapshots found for VM: $vmName"
+        } else {
+            Write-Output "VM | Snapshot Name | Creation Time"
+            Write-Output "-----------------------------------------------------------"
+            foreach ($snapshot in $snapshots) {
+                Write-Output "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+            }
         }
       register: vm_snapshots
       when: vm_name != ""
       changed_when: false
-      failed_when: false
       
     - name: Display all snapshots
       debug:
