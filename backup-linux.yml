@@ -198,7 +198,7 @@
     
     - name: Check nginx service status
       shell: |
-        systemctl is-active nginx 2>/dev/null || echo "inactive"
+            systemctl is-active nginx 2>/dev/null || echo "inactive"
       register: nginx_service_status
       ignore_errors: yes
       changed_when: false

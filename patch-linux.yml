@@ -9,9 +9,12 @@
   # nginx_version_target can be set in AWX as an extra variable
   #   - If specified: Upgrade to specific version (e.g., "1.20.1", "1.18.0-2.el7")
   #   - If not set: Upgrade to latest available in repository (not necessarily latest)
+  #   - When switching mainlines (e.g., 1.14 to 1.20), the playbook will automatically
+  #     detect and switch the module stream on Oracle Linux 8+
   #   - Examples:
-  #     - nginx_version_target: "1.20.1"
+  #     - nginx_version_target: "1.20.1"  (switches to 1.20 stream if needed)
   #     - nginx_version_target: "1.18.0-2.el7"
+  #     - nginx_version_target: "1.20"  (upgrades to latest in 1.20 stream)
   #
   # use_nginx_official_repo can be set in AWX as an extra variable
   #   - true: Use official NGINX repository (gets latest stable versions like 1.26.x)
@@ -286,6 +289,119 @@
       changed_when: false
       when: nginx_installed
     
+    - name: Check current nginx module stream (Oracle Linux 8+)
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf module list nginx 2>/dev/null | grep -E "^nginx" | grep "\[e\]" | awk '{print $2}' | head -1 || echo "NoModuleStream"
+        else
+            echo "NoModuleStream"
+        fi
+      register: nginx_current_stream
+      ignore_errors: yes
+      changed_when: false
+      when: nginx_installed
+    
+    - name: Determine target nginx stream from version
+      set_fact:
+        nginx_target_stream: >-
+          {%- set target_ver = nginx_version_target | default('') | string -%}
+          {%- if target_ver.startswith('1.20') or target_ver.startswith('1.21') -%}
+            1.20
+          {%- elif target_ver.startswith('1.22') or target_ver.startswith('1.23') -%}
+            1.22
+          {%- elif target_ver.startswith('1.24') or target_ver.startswith('1.25') -%}
+            1.24
+          {%- elif target_ver.startswith('1.26') or target_ver.startswith('1.27') -%}
+            1.26
+          {%- elif target_ver.startswith('1.18') or target_ver.startswith('1.19') -%}
+            1.18
+          {%- elif target_ver.startswith('1.16') or target_ver.startswith('1.17') -%}
+            1.16
+          {%- elif target_ver.startswith('1.14') or target_ver.startswith('1.15') -%}
+            1.14
+          {%- else -%}
+            {{ nginx_current_stream.stdout | default('NoModuleStream') }}
+          {%- endif -%}
+      when: 
+        - nginx_installed
+        - nginx_version_target is defined
+        - nginx_version_target != ''
+    
+    - name: Check if stream switching is needed
+      set_fact:
+        stream_switch_needed: >-
+          {%- set current_stream = nginx_current_stream.stdout | default('NoModuleStream') | trim -%}
+          {%- set target_stream = nginx_target_stream | default('') | trim -%}
+          {%- if target_stream != '' and current_stream != 'NoModuleStream' and target_stream != current_stream -%}
+            true
+          {%- else -%}
+            false
+          {%- endif -%}
+      when: 
+        - nginx_installed
+        - nginx_target_stream is defined
+    
+    - name: Display stream switching information
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Module Stream Information"
+          - "Current Stream: {{ nginx_current_stream.stdout | default('NoModuleStream') }}"
+          - "Target Stream: {{ nginx_target_stream | default('Not specified') }}"
+          - "Stream Switch Needed: {{ stream_switch_needed | default(false) }}"
+          - "=========================================="
+      when: 
+        - nginx_installed
+        - nginx_current_stream is defined
+    
+    - name: Reset nginx module stream
+      shell: |
+        dnf module reset -y nginx
+      register: nginx_module_reset
+      ignore_errors: yes
+      when: 
+        - nginx_installed
+        - stream_switch_needed | default(false) | bool
+        - not use_official_repo
+    
+    - name: Enable target nginx module stream
+      shell: |
+        dnf module enable -y nginx:{{ nginx_target_stream }}
+      register: nginx_module_enable
+      ignore_errors: yes
+      when: 
+        - nginx_installed
+        - stream_switch_needed | default(false) | bool
+        - not use_official_repo
+        - nginx_module_reset is succeeded
+    
+    - name: Verify stream switch
+      shell: |
+        dnf module list nginx 2>/dev/null | grep -E "^nginx" | grep "\[e\]" | awk '{print $2}' | head -1 || echo "NoModuleStream"
+      register: nginx_stream_after_switch
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - nginx_installed
+        - stream_switch_needed | default(false) | bool
+        - not use_official_repo
+        - nginx_module_enable is defined
+    
+    - name: Display stream switch result
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Module Stream Switch Result"
+          - "Previous Stream: {{ nginx_current_stream.stdout | default('Unknown') }}"
+          - "New Stream: {{ nginx_stream_after_switch.stdout | default('Unknown') }}"
+          - "Status: {{ 'Success' if (nginx_stream_after_switch.stdout is defined and nginx_target_stream in nginx_stream_after_switch.stdout) else 'Failed' }}"
+          - "=========================================="
+      when: 
+        - nginx_installed
+        - stream_switch_needed | default(false) | bool
+        - not use_official_repo
+        - nginx_stream_after_switch is defined
+    
     - name: Check for available nginx updates
       shell: |
         if command -v dnf &> /dev/null; then
@@ -309,9 +425,9 @@
     - name: Get available nginx package versions
       shell: |
         if command -v dnf &> /dev/null; then
-            dnf list available nginx 2>/dev/null | tail -n +2 | awk '{print $1, $2}' | head -5
+            dnf list --showduplicates nginx 2>/dev/null | grep -E '^nginx'
         elif command -v yum &> /dev/null; then
-            yum list available nginx 2>/dev/null | tail -n +2 | awk '{print $1, $2}' | head -5
+            yum list --showduplicates nginx 2>/dev/null | grep -E '^nginx'
         else
             echo "No package manager found"
         fi
@@ -320,12 +436,28 @@
       changed_when: false
       when: nginx_installed
     
+    - name: Normalize nginx available versions output
+      set_fact:
+        nginx_available_versions_list: "{{ nginx_available_versions.stdout_lines | default([]) | select('match', '^nginx') | map('regex_replace', '\\s+', ' ') | list }}"
+      when: 
+        - nginx_installed
+        - nginx_available_versions.stdout is defined
+        - nginx_available_versions.stdout != ''
+    
+    - name: Extract nginx version numbers from available list
+      set_fact:
+        nginx_available_version_numbers: "{{ nginx_available_versions_list | map('regex_search', '^nginx[^\\s]*\\s+([^\\s]+)', '\\1') | reject('equalto', None) | map('regex_replace', '^[0-9]+:', '') | list }}"
+      when:
+        - nginx_installed
+        - nginx_available_versions_list is defined
+        - nginx_available_versions_list | length > 0
+    
     - name: Get latest available nginx version
       shell: |
         if command -v dnf &> /dev/null; then
-            dnf list available nginx 2>/dev/null | tail -n +2 | awk '{print $2}' | head -1
+            dnf list --showduplicates nginx 2>/dev/null | awk '/^nginx/ {print $2}' | sort -V | tail -1
         elif command -v yum &> /dev/null; then
-            yum list available nginx 2>/dev/null | tail -n +2 | awk '{print $2}' | head -1
+            yum list --showduplicates nginx 2>/dev/null | awk '/^nginx/ {print $2}' | sort -V | tail -1
         else
             echo ""
         fi
@@ -337,8 +469,10 @@
     - name: Determine if updates are available
       set_fact:
         updates_available: >-
-          {%- set current_ver = nginx_current_version_parsed.stdout | default('') -%}
-          {%- set latest_ver = nginx_latest_version.stdout | default('') -%}
+          {%- set current_ver_raw = (nginx_current_version_parsed.stdout | default('') | trim) -%}
+          {%- set latest_ver_raw = (nginx_latest_version.stdout | default('') | trim) -%}
+          {%- set current_ver = current_ver_raw.split(':')[-1] if current_ver_raw != '' else '' -%}
+          {%- set latest_ver = latest_ver_raw.split(':')[-1] if latest_ver_raw != '' else '' -%}
           {%- if 'UPDATES:None' in nginx_updates_available.stdout | default('') or 'TARGET_VERSION:NotAvailable' in nginx_updates_available.stdout | default('') -%}
             false
           {%- elif latest_ver != '' and current_ver != '' and latest_ver != current_ver -%}
@@ -362,12 +496,16 @@
     
     - name: Display available nginx versions
       debug:
-        msg: "{{ nginx_available_versions.stdout_lines }}"
+        msg:
+          - "=========================================="
+          - "Available Nginx Versions"
+          - "Entries: {{ nginx_available_versions_list | default([]) }}"
+          - "Version Numbers: {{ nginx_available_version_numbers | default([]) }}"
+          - "=========================================="
       when: 
         - nginx_installed
-        - nginx_available_versions.stdout is defined
-        - nginx_available_versions.stdout != ''
-        - updates_available
+        - nginx_available_versions_list is defined
+        - nginx_available_versions_list | length > 0
     
     - name: Display warning before upgrade if no updates available
       debug:
@@ -405,8 +543,8 @@
       when: 
         - nginx_installed
         - install_updates | default(false) | bool
-        - updates_available
         - not use_official_repo
+        - (updates_available or (stream_switch_needed | default(false)))
       ignore_errors: yes
     
     - name: Install nginx updates (from official repo)
