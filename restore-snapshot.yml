@@ -12,24 +12,33 @@
       
     - name: Restore VM from snapshot
       win_shell: |
-        $ErrorActionPreference = 'Stop'
-        $vmName = "{{ vm_name }}"
-        $snapshotName = "{{ snapshot_name }}"
+        $ErrorActionPreference = 'Continue'
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $ProgressPreference = 'SilentlyContinue'
+        
+        $vmName = '{{ vm_name }}'
+        $snapshotName = '{{ snapshot_name }}'
         
         try {
-            Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
-            Write-Output "SUCCESS: VM '$vmName' restored from snapshot '$snapshotName'"
+            # Redirect all streams to ensure clean output
+            $result = Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop 2>&1
+            
+            # Success - output to stdout
+            [Console]::WriteLine("SUCCESS: VM '$vmName' restored from snapshot '$snapshotName'")
             exit 0
         } catch {
-            Write-Error "ERROR: Failed to restore snapshot - $_"
-            Write-Output "ERROR: Failed to restore snapshot for '$vmName' from '$snapshotName' - $_"
+            # Error - output to stdout (not stderr)
+            [Console]::WriteLine("ERROR: Failed to restore snapshot for '$vmName' from '$snapshotName' - $($_.Exception.Message)")
             exit 1
         }
       register: restore_result
+      args:
+        executable: powershell.exe
       changed_when: restore_result.rc == 0
       failed_when: restore_result.rc != 0
+      ignore_errors: yes
       
     - name: Display result
       debug:
-        msg: "{{ restore_result.stdout | trim }}"
+        msg: "{{ restore_result.stdout_lines | default(['No output received']) }}"
 

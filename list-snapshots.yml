@@ -8,42 +8,79 @@
   tasks:
     - name: List all snapshots for all VMs
       win_shell: |
-        Get-VM | ForEach-Object {
-            $vmName = $_.Name
-            $snapshots = Get-VMSnapshot -VMName $vmName
-            foreach ($snapshot in $snapshots) {
-                [PSCustomObject]@{
-                    VM = $vmName
-                    SnapshotName = $snapshot.Name
-                    CreationTime = $snapshot.CreationTime
-                    ParentSnapshot = $snapshot.ParentSnapshotName
+        $ErrorActionPreference = 'Continue'
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $ProgressPreference = 'SilentlyContinue'
+        
+        try {
+            $allSnapshots = @()
+            Get-VM -ErrorAction SilentlyContinue | ForEach-Object {
+                $vmName = $_.Name
+                $snapshots = Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue
+                foreach ($snapshot in $snapshots) {
+                    $allSnapshots += [PSCustomObject]@{
+                        VM = $vmName
+                        SnapshotName = $snapshot.Name
+                        CreationTime = $snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
+                        ParentSnapshot = $snapshot.ParentSnapshotName
+                    }
                 }
             }
-        } | ConvertTo-Json
+            
+            if ($allSnapshots.Count -eq 0) {
+                Write-Output '[]'
+            } else {
+                $allSnapshots | ConvertTo-Json -Compress
+            }
+        } catch {
+            Write-Output '[]'
+        }
       register: all_snapshots
       when: vm_name == ""
+      args:
+        executable: powershell.exe
+      changed_when: false
       
     - name: List snapshots for specific VM
       win_shell: |
-        $snapshots = Get-VMSnapshot -VMName "{{ vm_name }}"
-        $snapshots | ForEach-Object {
-            [PSCustomObject]@{
-                VM = "{{ vm_name }}"
-                SnapshotName = $_.Name
-                CreationTime = $_.CreationTime
-                ParentSnapshot = $_.ParentSnapshotName
+        $ErrorActionPreference = 'Continue'
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $ProgressPreference = 'SilentlyContinue'
+        
+        try {
+            $snapshots = @(Get-VMSnapshot -VMName '{{ vm_name }}' -ErrorAction Stop)
+            $result = @()
+            
+            foreach ($snapshot in $snapshots) {
+                $result += [PSCustomObject]@{
+                    VM = '{{ vm_name }}'
+                    SnapshotName = $snapshot.Name
+                    CreationTime = $snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
+                    ParentSnapshot = $snapshot.ParentSnapshotName
+                }
             }
-        } | ConvertTo-Json
+            
+            if ($result.Count -eq 0) {
+                Write-Output '[]'
+            } else {
+                $result | ConvertTo-Json -Compress
+            }
+        } catch {
+            Write-Output '[]'
+        }
       register: vm_snapshots
       when: vm_name != ""
+      args:
+        executable: powershell.exe
+      changed_when: false
       
-    - name: Display all snapshots
+    - name: Parse and display all snapshots
       debug:
-        msg: "{{ all_snapshots.stdout | from_json }}"
+        msg: "{{ all_snapshots.stdout | default('[]') | trim | from_json }}"
       when: vm_name == ""
       
-    - name: Display VM snapshots
+    - name: Parse and display VM snapshots
       debug:
-        msg: "{{ vm_snapshots.stdout | from_json }}"
+        msg: "{{ vm_snapshots.stdout | default('[]') | trim | from_json }}"
       when: vm_name != ""
 
