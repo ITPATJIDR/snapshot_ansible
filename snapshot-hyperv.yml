@@ -33,13 +33,20 @@
       
     - name: Get all VMs if no specific VMs specified
       win_shell: |
-        Get-VM | Select-Object -ExpandProperty Name | ConvertTo-Json
+        $vms = Get-VM | Select-Object -ExpandProperty Name
+        if ($vms) {
+            # Ensure output is always an array
+            @($vms) | ConvertTo-Json -Compress
+        } else {
+            # Return empty JSON array if no VMs
+            '[]'
+        }
       register: all_vms
       when: vm_names_normalized | length == 0
       
     - name: Set VM list from all VMs
       set_fact:
-        target_vms: "{{ all_vms.stdout | from_json }}"
+        target_vms: "{{ (all_vms.stdout | trim | from_json) if (all_vms.stdout | trim | length > 0) else [] }}"
       when: vm_names_normalized | length == 0
       
     - name: Set VM list from provided names
