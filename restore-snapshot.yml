@@ -23,10 +23,6 @@
       register: restore_result
       changed_when: ((restore_result.stdout | default('{}')) | from_json).status == 'SUCCESS'
 
-    - name: debug
-      ansible.
-      register: restore_result
-
     - name: Check restore status
       fail:
         msg: "Restore operation failed"
