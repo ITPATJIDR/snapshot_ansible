@@ -15,46 +15,42 @@
       
     - name: Delete specific snapshot
       win_shell: |
-        $ProgressPreference = 'SilentlyContinue'
-        $vmName = @"
-        {{ vm_name }}
-        "@.Trim()
-        $snapshotName = @"
-        {{ snapshot_name }}
-        "@.Trim()
         try {
-            Remove-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
-            Write-Output "SUCCESS: Snapshot deleted from VM"
+          $ProgressPreference = 'SilentlyContinue'
+          $vmName = "{{ vm_name | replace('"', '`"') }}"
+          $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
+          Remove-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop *> $null
+          Write-Host "SUCCESS"
+          exit 0
         } catch {
-            Write-Output "ERROR: $($_.Exception.Message)"
-            throw
+          Write-Host "FAILED: $($_.Exception.Message)"
+          exit 1
         }
       register: delete_result
       when: snapshot_name != "" and not delete_all_snapshots
-      changed_when: true
+      failed_when: false
       
     - name: Delete all snapshots for VM
       win_shell: |
-        $ProgressPreference = 'SilentlyContinue'
-        $vmName = @"
-        {{ vm_name }}
-        "@.Trim()
         try {
-            $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction Stop)
-            if ($snapshots.Count -gt 0) {
-                $count = $snapshots.Count
-                $snapshots | Remove-VMSnapshot -Confirm:$false -ErrorAction Stop | Out-Null
-                Write-Output "SUCCESS: Deleted $count snapshot(s) from VM"
-            } else {
-                Write-Output "INFO: No snapshots found for VM"
-            }
+          $ProgressPreference = 'SilentlyContinue'
+          $vmName = "{{ vm_name | replace('"', '`"') }}"
+          $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction Stop)
+          if ($snapshots.Count -gt 0) {
+              $count = $snapshots.Count
+              $snapshots | Remove-VMSnapshot -Confirm:$false -ErrorAction Stop *> $null
+              Write-Host "SUCCESS: Deleted $count snapshot(s)"
+          } else {
+              Write-Host "No snapshots found"
+          }
+          exit 0
         } catch {
-            Write-Output "ERROR: $($_.Exception.Message)"
-            throw
+          Write-Host "FAILED: $($_.Exception.Message)"
+          exit 1
         }
       register: delete_all_result
       when: delete_all_snapshots
-      changed_when: true
+      failed_when: false
       
     - name: Display result for specific snapshot
       debug:
@@ -65,4 +61,11 @@
       debug:
         msg: "{{ delete_all_result.stdout_lines }}"
       when: delete_all_result is defined and delete_all_result is not skipped
+      
+    - name: Check if delete succeeded
+      fail:
+        msg: "Delete operation failed"
+      when: >
+        (delete_result is defined and delete_result is not skipped and delete_result.rc != 0) or
+        (delete_all_result is defined and delete_all_result is not skipped and delete_all_result.rc != 0)
 
