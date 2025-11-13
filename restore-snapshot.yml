@@ -21,7 +21,7 @@
         Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null;
         if ($?) { Write-Output $success } else { Write-Output $fail; exit 1 }"
       register: restore_result
-      changed_when: '"status":"SUCCESS"' in (restore_result.stdout | default(''))
+      changed_when: ((restore_result.stdout | default('{}')) | from_json).status == 'SUCCESS'
 
     - name: debug
       ansible.
