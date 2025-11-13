@@ -2,6 +2,8 @@
 - name: Restore Hyper-V VM from Snapshot
   hosts: all
   gather_facts: no
+  vars:
+    skip_verify: false
 
   tasks:
     - name: Validate required variables
@@ -28,7 +30,10 @@
     - name: Check restore status
       fail:
         msg: "Restore operation failed"
-      when: restore_result.rc is defined and restore_result.rc != 0
+      when:
+        - not (skip_verify | bool)
+        - restore_result.rc is defined
+        - restore_result.rc != 0
 
     - name: Display result
       debug:
