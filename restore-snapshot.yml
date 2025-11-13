@@ -17,7 +17,7 @@
     - name: Restore VM from snapshot (this may take several minutes)
       win_command: >
         powershell.exe -NoLogo -NoProfile -Command
-        "Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null; if ($?) { Write-Output '{""status"":""SUCCESS""}' } else { exit 1 }"
+        "Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:`$false | Out-Null; if (`$?) { Write-Output '{""status"":""SUCCESS""}' } else { exit 1 }"
       register: restore_result
       changed_when: "'\"status\":\"SUCCESS\"' in (restore_result.stdout | default(''))"
       
