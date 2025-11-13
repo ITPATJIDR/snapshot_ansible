@@ -15,23 +15,25 @@
       
     - name: Delete specific snapshot
       win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
         $vmName = "{{ vm_name | replace('"', '`"') }}"
         $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
-        Remove-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
-        Write-Output "Snapshot deleted successfully"
+        Remove-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
+        "SUCCESS"
       register: delete_result
       when: snapshot_name != "" and not delete_all_snapshots
       
     - name: Delete all snapshots for VM
       win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
         $vmName = "{{ vm_name | replace('"', '`"') }}"
-        $snapshots = @(Get-VMSnapshot -VMName $vmName)
+        $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction Stop)
         if ($snapshots.Count -gt 0) {
             $count = $snapshots.Count
-            $snapshots | Remove-VMSnapshot -Confirm:$false
-            Write-Output "Deleted $count snapshot(s)"
+            $snapshots | Remove-VMSnapshot -Confirm:$false -ErrorAction Stop | Out-Null
+            "SUCCESS: Deleted $count snapshot(s)"
         } else {
-            Write-Output "No snapshots found"
+            "No snapshots found"
         }
       register: delete_all_result
       when: delete_all_snapshots

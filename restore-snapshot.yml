@@ -12,10 +12,13 @@
       
     - name: Restore VM from snapshot
       win_shell: |
-        $vmName = "{{ vm_name | replace('"', '`"') }}"
-        $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
-        Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
-        Write-Output "Restore completed successfully"
+        $ProgressPreference = 'SilentlyContinue'
+        $VerbosePreference = 'SilentlyContinue'
+        $WarningPreference = 'SilentlyContinue'
+        $vmName = '{{ vm_name }}'
+        $snapshotName = '{{ snapshot_name }}'
+        $null = Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
+        Write-Host "SUCCESS"
       register: restore_result
       
     - name: Display result

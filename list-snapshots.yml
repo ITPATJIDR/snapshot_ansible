@@ -8,20 +8,21 @@
   tasks:
     - name: List all snapshots for all VMs
       win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
         $output = @()
-        Get-VM | ForEach-Object {
+        Get-VM -ErrorAction SilentlyContinue | ForEach-Object {
             $vmName = $_.Name
-            $snapshots = Get-VMSnapshot -VMName $vmName
+            $snapshots = Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue
             foreach ($snapshot in $snapshots) {
                 $output += "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
             }
         }
         if ($output.Count -eq 0) {
-            Write-Output "No snapshots found"
+            "No snapshots found"
         } else {
-            Write-Output "VM | Snapshot Name | Creation Time"
-            Write-Output "-----------------------------------------------------------"
-            $output | ForEach-Object { Write-Output $_ }
+            "VM | Snapshot Name | Creation Time"
+            "-----------------------------------------------------------"
+            $output
         }
       register: all_snapshots
       when: vm_name == ""
@@ -29,15 +30,16 @@
       
     - name: List snapshots for specific VM
       win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
         $vmName = "{{ vm_name | replace('"', '`"') }}"
-        $snapshots = @(Get-VMSnapshot -VMName $vmName)
+        $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction Stop)
         if ($snapshots.Count -eq 0) {
-            Write-Output "No snapshots found for VM: $vmName"
+            "No snapshots found for VM: $vmName"
         } else {
-            Write-Output "VM | Snapshot Name | Creation Time"
-            Write-Output "-----------------------------------------------------------"
+            "VM | Snapshot Name | Creation Time"
+            "-----------------------------------------------------------"
             foreach ($snapshot in $snapshots) {
-                Write-Output "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+                "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss'))"
             }
         }
       register: vm_snapshots
