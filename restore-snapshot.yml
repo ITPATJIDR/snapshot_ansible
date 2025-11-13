@@ -1,11 +1,7 @@
 ---
 - name: Restore Hyper-V VM from Snapshot
-  hosts: hyperv_hosts
+  hosts: all
   gather_facts: no
-  vars:
-    vm_name: ""  # Required: VM name
-    snapshot_name: ""  # Required: Snapshot name to restore
-    
   tasks:
     - name: Validate required variables
       fail:
