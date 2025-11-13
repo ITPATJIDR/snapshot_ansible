@@ -14,8 +14,10 @@
     - name: Restore VM from snapshot (this may take several minutes)
       win_powershell: |
         Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null
+
         if ($?) {
-          Write-Output '{"status":"SUCCESS"}'
+          $payload = @{ status = 'SUCCESS' } | ConvertTo-Json -Compress
+          Write-Output $payload
           exit 0
         } else {
           exit 1
