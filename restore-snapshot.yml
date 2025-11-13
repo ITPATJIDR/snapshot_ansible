@@ -1,50 +1,71 @@
----
-- name: Restore Hyper-V VM from Snapshot
+- name: Restore Hyper-V VM Snapshot
   hosts: all
   gather_facts: no
   vars:
-    skip_verify: true
+    vm_name: ""  # Required: VM name to restore
+    snapshot_name: ""  # Required: Snapshot name to restore
+    stop_vm_if_running: true  # Stop VM before restore if it's running
+    start_vm_after_restore: true  # Start VM after restore completes
 
   tasks:
     - name: Validate required variables
       fail:
-        msg: "Both vm_name and snapshot_name are required"
-      when: >
-        (vm_name is not defined or vm_name == "" or vm_name | trim == "") or
-        (snapshot_name is not defined or snapshot_name == "" or snapshot_name | trim == "")
+        msg: "vm_name and snapshot_name are required."
+      when: vm_name | length == 0 or snapshot_name | length == 0
 
-    - name: Restore VM from snapshot (this may take several minutes)
-      ansible.windows.win_shell: |
-        $result = @{
-          status = 'FAILED'
-          message = ''
+    - name: Ensure snapshot exists
+      win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
+        $vmName = "{{ vm_name | replace('"', '`"') }}"
+        $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
+        $null = Get-VM -Name $vmName -ErrorAction Stop
+        $snapshot = Get-VMSnapshot -VMName $vmName -Name $snapshotName -ErrorAction Stop
+        if (-not $snapshot) {
+            throw "Snapshot '$snapshotName' not found for VM '$vmName'."
         }
+        "FOUND"
+      register: snapshot_check
 
-        try {
-          Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false -ErrorAction Stop | Out-Null
-          $result.status = 'SUCCESS'
+    - name: Stop VM if running
+      win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
+        $vmName = "{{ vm_name | replace('"', '`"') }}"
+        $vm = Get-VM -Name $vmName -ErrorAction Stop
+        if ($vm.State -eq 'Running') {
+            Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
+            "STOPPED"
+        } else {
+            "ALREADY_STOPPED"
         }
-        catch {
-          $result.message = $_.Exception.Message
-        }
+      register: stop_vm_result
+      when: stop_vm_if_running
+      changed_when: stop_vm_result.stdout is search("STOPPED")
 
-        $result | ConvertTo-Json -Compress | Write-Output
+    - name: Restore snapshot
+      win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
+        $vmName = "{{ vm_name | replace('"', '`"') }}"
+        $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
+        Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
+        "RESTORED"
       register: restore_result
 
-      changed_when: >
-        ((restore_result.stdout | default('{}')) | from_json).status == 'SUCCESS'
+    - name: Start VM after restore
+      win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
+        $vmName = "{{ vm_name | replace('"', '`"') }}"
+        Start-VM -Name $vmName -ErrorAction Stop | Out-Null
+        "STARTED"
+      register: start_vm_result
+      when: start_vm_after_restore
+      changed_when: start_vm_result.stdout is search("STARTED")
 
-    - name: Check restore status
-      fail:
-        msg: >
-          Restore operation failed: {{
-            ((restore_result.stdout | default('{}')) | from_json).message | default('Unknown error')
-          }}
-      when:
-        - not (skip_verify | bool)
-        - restore_result.rc is defined
-        - restore_result.rc != 0
-
-    - name: Display result
+    - name: Display restore summary
       debug:
-        msg: "VM '{{ vm_name }}' has been restored from snapshot '{{ snapshot_name }}' successfully"
+        msg:
+          vm_name: "{{ vm_name }}"
+          snapshot_name: "{{ snapshot_name }}"
+          stop_vm: "{{ stop_vm_result.stdout | default('SKIPPED') }}"
+          restore: "{{ restore_result.stdout }}"
+          start_vm: "{{ start_vm_result.stdout | default('SKIPPED') }}"
+
