@@ -66,29 +66,25 @@
         
     - name: Create Hyper-V checkpoint/snapshot
       win_shell: |
-        $ErrorActionPreference = 'Continue'
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $ProgressPreference = 'SilentlyContinue'
-        
-        $vmName = '{{ item }}'
+        $vmName = @"
+        {{ item }}
+        "@.Trim()
         $snapshotName = "$vmName - ({{ snapshot_date }} - {{ snapshot_time }})"
-        
         try {
-            $result = Checkpoint-VM -Name $vmName -SnapshotName $snapshotName -ErrorAction Stop 2>&1
-            [Console]::WriteLine("SUCCESS: Snapshot '$snapshotName' created for $vmName")
-            exit 0
+            Checkpoint-VM -Name $vmName -SnapshotName $snapshotName -ErrorAction Stop | Out-Null
+            Write-Output "SUCCESS: Snapshot created for $vmName"
         } catch {
-            [Console]::WriteLine("ERROR: Failed to create snapshot for $vmName - $($_.Exception.Message)")
-            exit 1
+            Write-Output "ERROR: Failed for $vmName - $($_.Exception.Message)"
+            throw
         }
       loop: "{{ target_vms }}"
       register: snapshot_results
-      args:
-        executable: powershell.exe
       changed_when: true
-      ignore_errors: yes
       
     - name: Display snapshot results
       debug:
-        msg: "{{ snapshot_results.results | map(attribute='stdout_lines') | list }}"
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ snapshot_results.results }}"
+      when: item.stdout_lines is defined
 

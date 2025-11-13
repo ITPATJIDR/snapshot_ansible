@@ -8,79 +8,65 @@
   tasks:
     - name: List all snapshots for all VMs
       win_shell: |
-        $ErrorActionPreference = 'Continue'
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $ProgressPreference = 'SilentlyContinue'
-        
         try {
-            $allSnapshots = @()
+            $output = @()
             Get-VM -ErrorAction SilentlyContinue | ForEach-Object {
                 $vmName = $_.Name
                 $snapshots = Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue
                 foreach ($snapshot in $snapshots) {
-                    $allSnapshots += [PSCustomObject]@{
-                        VM = $vmName
-                        SnapshotName = $snapshot.Name
-                        CreationTime = $snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
-                        ParentSnapshot = $snapshot.ParentSnapshotName
-                    }
+                    $line = "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')) | $($snapshot.ParentSnapshotName)"
+                    $output += $line
                 }
             }
-            
-            if ($allSnapshots.Count -eq 0) {
-                Write-Output '[]'
+            if ($output.Count -eq 0) {
+                Write-Output "No snapshots found"
             } else {
-                $allSnapshots | ConvertTo-Json -Compress
+                Write-Output "VM | Snapshot Name | Creation Time | Parent Snapshot"
+                Write-Output "-----------------------------------------------------------"
+                $output | ForEach-Object { Write-Output $_ }
             }
         } catch {
-            Write-Output '[]'
+            Write-Output "ERROR: $($_.Exception.Message)"
+            throw
         }
       register: all_snapshots
       when: vm_name == ""
-      args:
-        executable: powershell.exe
       changed_when: false
       
     - name: List snapshots for specific VM
       win_shell: |
-        $ErrorActionPreference = 'Continue'
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $ProgressPreference = 'SilentlyContinue'
-        
+        $vmName = @"
+        {{ vm_name }}
+        "@.Trim()
         try {
-            $snapshots = @(Get-VMSnapshot -VMName '{{ vm_name }}' -ErrorAction Stop)
-            $result = @()
-            
-            foreach ($snapshot in $snapshots) {
-                $result += [PSCustomObject]@{
-                    VM = '{{ vm_name }}'
-                    SnapshotName = $snapshot.Name
-                    CreationTime = $snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
-                    ParentSnapshot = $snapshot.ParentSnapshotName
+            $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction Stop)
+            if ($snapshots.Count -eq 0) {
+                Write-Output "No snapshots found for VM: $vmName"
+            } else {
+                Write-Output "VM | Snapshot Name | Creation Time | Parent Snapshot"
+                Write-Output "-----------------------------------------------------------"
+                foreach ($snapshot in $snapshots) {
+                    $line = "$vmName | $($snapshot.Name) | $($snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')) | $($snapshot.ParentSnapshotName)"
+                    Write-Output $line
                 }
             }
-            
-            if ($result.Count -eq 0) {
-                Write-Output '[]'
-            } else {
-                $result | ConvertTo-Json -Compress
-            }
         } catch {
-            Write-Output '[]'
+            Write-Output "ERROR: $($_.Exception.Message)"
+            throw
         }
       register: vm_snapshots
       when: vm_name != ""
-      args:
-        executable: powershell.exe
       changed_when: false
       
-    - name: Parse and display all snapshots
+    - name: Display all snapshots
       debug:
-        msg: "{{ all_snapshots.stdout | default('[]') | trim | from_json }}"
+        msg: "{{ all_snapshots.stdout_lines }}"
       when: vm_name == ""
       
-    - name: Parse and display VM snapshots
+    - name: Display VM snapshots
       debug:
-        msg: "{{ vm_snapshots.stdout | default('[]') | trim | from_json }}"
+        msg: "{{ vm_snapshots.stdout_lines }}"
       when: vm_name != ""
 
