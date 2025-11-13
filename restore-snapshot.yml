@@ -11,16 +11,37 @@
         (snapshot_name is not defined or snapshot_name == "" or snapshot_name | trim == "")
       
     - name: Restore VM from snapshot (this may take several minutes)
-      raw: powershell.exe -Command "Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:`$false | Out-Null; if (`$?) { Write-Output 'SUCCESS' } else { exit 1 }"
+      win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $vmName = '{{ vm_name }}'
+        $snapshotName = '{{ snapshot_name }}'
+        try {
+          Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
+          $result = @{
+            status = 'success'
+            vm = $vmName
+            snapshot = $snapshotName
+          }
+          $result | ConvertTo-Json -Compress
+        } catch {
+          $result = @{
+            status = 'error'
+            vm = $vmName
+            snapshot = $snapshotName
+            message = $_.Exception.Message
+          }
+          $result | ConvertTo-Json -Compress
+          exit 1
+        }
       register: restore_result
-      changed_when: "'SUCCESS' in restore_result.stdout"
+      changed_when: restore_result.rc == 0
+      failed_when: restore_result.rc != 0
       
-    - name: Check restore status
-      fail:
-        msg: "Restore operation failed"
-      when: restore_result.rc is defined and restore_result.rc != 0
+    - name: Parse restore result
+      set_fact:
+        restore_output: "{{ restore_result.stdout | default('{}') | trim | from_json }}"
       
     - name: Display result
       debug:
-        msg: "VM '{{ vm_name }}' has been restored from snapshot '{{ snapshot_name }}' successfully"
+        msg: "{{ (restore_output.status | default('UNKNOWN') | upper) ~ ': VM ' ~ (restore_output.vm | default(vm_name)) ~ ' snapshot ' ~ (restore_output.snapshot | default(snapshot_name)) }}"
 
