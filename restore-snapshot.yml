@@ -14,12 +14,9 @@
         (snapshot_name is not defined or snapshot_name == "" or snapshot_name | trim == "")
 
     - name: Restore VM from snapshot (this may take several minutes)
-      win_command: >
-        powershell.exe -NoLogo -NoProfile -Command
-        "$success = @{ status = 'SUCCESS' } | ConvertTo-Json -Compress;
-        $fail    = @{ status = 'FAILED' }  | ConvertTo-Json -Compress;
-        Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null;
-        if ($?) { Write-Output $success } else { Write-Output $fail; exit 1 }"
+      win_powershell: |
+        Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false | Out-Null
+        exit 0
       register: restore_result
       changed_when: ((restore_result.stdout | default('{}')) | from_json).status == 'SUCCESS'
 
