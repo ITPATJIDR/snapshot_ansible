@@ -11,12 +11,12 @@
         (snapshot_name is not defined or snapshot_name == "" or snapshot_name | trim == "")
       
     - name: Restore VM from snapshot (this may take several minutes)
-      win_shell: Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false
+      win_shell: |
+        Restore-VMSnapshot -VMName '{{ vm_name }}' -Name '{{ snapshot_name }}' -Confirm:$false
+        Write-Output "Restore completed successfully"
       register: restore_result
-      async: 1800
-      poll: 10
       
-    - name: Display success message
+    - name: Display result
       debug:
-        msg: "VM '{{ vm_name }}' has been restored from snapshot '{{ snapshot_name }}'"
+        msg: "{{ restore_result.stdout | default('VM restored successfully') }}"
 
