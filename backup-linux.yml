@@ -18,6 +18,13 @@
   #   - Examples:
   #     - nginx_version: "1.20.1"
   #     - nginx_version: "1.18.0-2.el7"
+  #
+  # use_nginx_official_repo can be set in AWX as an extra variable
+  #   - true: Use official NGINX repository (gets latest stable versions)
+  #   - false: Use default Oracle Linux repository (default: false)
+  #   - Examples:
+  #     - use_nginx_official_repo: true
+  #     - use_nginx_official_repo: false
 
   tasks:
     - name: Get formatted date and time
@@ -78,6 +85,92 @@
             false
           {%- endif -%}
     
+    - name: Check if using official NGINX repository
+      set_fact:
+        use_official_repo: "{{ use_nginx_official_repo | default(false) | bool }}"
+    
+    - name: Disable and reset nginx module stream (Oracle Linux 8+)
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf module disable -y nginx 2>/dev/null || true
+            dnf module reset -y nginx 2>/dev/null || true
+        fi
+      register: disable_nginx_module
+      when: 
+        - not nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
+    - name: Remove existing broken nginx repository files
+      shell: |
+        rm -f /etc/yum.repos.d/nginx*.repo 2>/dev/null || true
+      register: remove_old_repo
+      when: 
+        - not nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
+    - name: Detect OS release version (major version only)
+      shell: |
+        if [ -f /etc/oracle-release ]; then
+            # Extract ONLY major version (8.10 -> 8, 9.3 -> 9)
+            cat /etc/oracle-release | grep -oE '[0-9]+' | head -1
+        elif [ -f /etc/redhat-release ]; then
+            # Extract ONLY major version
+            cat /etc/redhat-release | grep -oE '[0-9]+' | head -1
+        elif [ -f /etc/os-release ]; then
+            # Extract ONLY major version
+            grep VERSION_ID /etc/os-release | cut -d'"' -f2 | cut -d'.' -f1
+        else
+            echo "8"
+        fi
+      register: os_release_version
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - not nginx_installed
+        - use_official_repo
+    
+    - name: Create official NGINX repository file
+      copy:
+        content: |
+          [nginx-stable]
+          name=nginx stable repo
+          baseurl=http://nginx.org/packages/centos/{{ os_release_version.stdout | default('8') }}/$basearch/
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://nginx.org/keys/nginx_signing.key
+          module_hotfixes=true
+        dest: /etc/yum.repos.d/nginx.repo
+        mode: '0644'
+      register: nginx_repo_created
+      when: 
+        - not nginx_installed
+        - use_official_repo
+      ignore_errors: yes
+    
+    - name: Import NGINX GPG key
+      shell: |
+        rpm --import https://nginx.org/keys/nginx_signing.key || true
+      register: nginx_gpg_import
+      ignore_errors: yes
+      when: 
+        - not nginx_installed
+        - use_official_repo
+    
+    - name: Update package cache after adding NGINX repo
+      shell: |
+        if command -v dnf &> /dev/null; then
+            dnf makecache || true
+        elif command -v yum &> /dev/null; then
+            yum makecache || true
+        fi
+      register: update_cache_after_repo
+      ignore_errors: yes
+      when: 
+        - not nginx_installed
+        - use_official_repo
+    
     - name: Check if EPEL repository is available (for Oracle Linux)
       shell: |
         if command -v dnf &> /dev/null; then
@@ -90,7 +183,9 @@
       register: epel_check
       ignore_errors: yes
       changed_when: false
-      when: not nginx_installed
+      when: 
+        - not nginx_installed
+        - not use_official_repo
     
     - name: Enable EPEL repository if needed
       shell: |
@@ -103,6 +198,7 @@
       ignore_errors: yes
       when: 
         - not nginx_installed
+        - not use_official_repo
         - "'EPEL:NotEnabled' in epel_check.stdout | default('')"
     
     - name: Install nginx (specific version if specified)
