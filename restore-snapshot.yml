@@ -10,16 +10,19 @@
         (vm_name is not defined or vm_name == "" or vm_name | trim == "") or
         (snapshot_name is not defined or snapshot_name == "" or snapshot_name | trim == "")
       
-    - name: Restore VM from snapshot
+    - name: Restore VM from snapshot (this may take several minutes)
       win_shell: |
         $ProgressPreference = 'SilentlyContinue'
         $VerbosePreference = 'SilentlyContinue'
         $WarningPreference = 'SilentlyContinue'
         $vmName = '{{ vm_name }}'
         $snapshotName = '{{ snapshot_name }}'
+        Write-Host "Starting restore operation..."
         $null = Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false
-        Write-Host "SUCCESS"
+        Write-Host "SUCCESS: Restore completed"
       register: restore_result
+      async: 1800
+      poll: 10
       
     - name: Display result
       debug:
