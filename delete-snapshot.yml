@@ -9,22 +9,30 @@
   #   - Empty/not set: vm_names: "" or leave unset (will delete last snapshot for all VMs)
     
   tasks:
+    - name: Set default vm_names if not defined
+      set_fact:
+        vm_names: ""
+      when: vm_names is not defined
+    
     - name: Normalize vm_names to a list (handle string from AWX survey)
       set_fact:
-        vm_names_normalized: >-
-          {%- if vm_names is not defined or vm_names == '' -%}
-            []
-          {%- elif vm_names is string -%}
-            {%- if ',' in vm_names -%}
-              {{ vm_names.split(',') | map('trim') | list | select('length') | list }}
-            {%- else -%}
-              {{ [vm_names | trim] }}
-            {%- endif -%}
-          {%- elif vm_names is iterable and vm_names is not string -%}
-            {{ vm_names | list }}
-          {%- else -%}
-            []
-          {%- endif -%}
+        vm_names_normalized: "{{ vm_names.split(',') | map('trim') | select | list }}"
+      when: vm_names is defined and vm_names is string and vm_names != '' and ',' in vm_names
+      
+    - name: Normalize vm_names to a list (single VM)
+      set_fact:
+        vm_names_normalized: "{{ [vm_names | trim] }}"
+      when: vm_names is defined and vm_names is string and vm_names != '' and ',' not in vm_names
+      
+    - name: Normalize vm_names to a list (already a list)
+      set_fact:
+        vm_names_normalized: "{{ vm_names | list }}"
+      when: vm_names is defined and vm_names is iterable and vm_names is not string
+      
+    - name: Set empty list if vm_names is empty
+      set_fact:
+        vm_names_normalized: []
+      when: vm_names is not defined or vm_names == '' or vm_names == None
       
     - name: Get all VMs if no specific VMs specified
       win_shell: |
