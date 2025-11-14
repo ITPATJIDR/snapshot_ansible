@@ -32,8 +32,13 @@
         $vmName = "{{ vm_name | replace('"', '`"') }}"
         $vm = Get-VM -Name $vmName -ErrorAction Stop
         if ($vm.State -eq 'Running') {
-            Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
-            "STOPPED"
+            try {
+                Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
+                "STOPPED"
+            } catch {
+                Write-Output "ERROR: $($_.Exception.Message)"
+                exit 1
+            }
         } else {
             "ALREADY_STOPPED"
         }
@@ -46,16 +51,26 @@
         $ProgressPreference = 'SilentlyContinue'
         $vmName = "{{ vm_name | replace('"', '`"') }}"
         $snapshotName = "{{ snapshot_name | replace('"', '`"') }}"
-        Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
-        "RESTORED"
+        try {
+            Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
+            "RESTORED"
+        } catch {
+            Write-Output "ERROR: $($_.Exception.Message)"
+            exit 1
+        }
       register: restore_result
 
     - name: Start VM after restore
       win_shell: |
         $ProgressPreference = 'SilentlyContinue'
         $vmName = "{{ vm_name | replace('"', '`"') }}"
-        Start-VM -Name $vmName -ErrorAction Stop | Out-Null
-        "STARTED"
+        try {
+            Start-VM -Name $vmName -ErrorAction Stop | Out-Null
+            "STARTED"
+        } catch {
+            Write-Output "ERROR: $($_.Exception.Message)"
+            exit 1
+        }
       register: start_vm_result
       when: start_vm_after_restore
       changed_when: start_vm_result.stdout is search("STARTED")
