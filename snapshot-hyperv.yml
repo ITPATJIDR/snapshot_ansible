@@ -66,17 +66,14 @@
         
     - name: Create Hyper-V checkpoint/snapshot
       win_shell: |
-        $ProgressPreference = 'SilentlyContinue'
         $vmName = "{{ item | replace('"', '`"') }}"
         $snapshotName = "$vmName - ({{ snapshot_date }} - {{ snapshot_time }})"
-        Checkpoint-VM -Name $vmName -SnapshotName $snapshotName -ErrorAction Stop | Out-Null
-        "SUCCESS: $vmName"
+        Checkpoint-VM -Name $vmName -SnapshotName $snapshotName
+        Write-Output "Snapshot created for $vmName"
       loop: "{{ target_vms }}"
-      async: 600
-      poll: 10
       register: snapshot_results
       
     - name: Display snapshot results
       debug:
-        msg: "{{ snapshot_results.results | map(attribute='stdout') | list }}"
+        msg: "{{ snapshot_results.results | map(attribute='stdout_lines') | list }}"
 
