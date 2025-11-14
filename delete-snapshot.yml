@@ -59,6 +59,79 @@
       debug:
         msg: "Deleting last snapshot for VMs: {{ target_vms }}"
         
+    - name: List all snapshots for target VMs
+      win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
+        $ErrorActionPreference = 'Stop'
+        $vmName = "{{ item | replace('"', '`"') }}"
+        
+        try {
+            # Get VM
+            $vm = Get-VM -Name $vmName -ErrorAction Stop
+            
+            # Get all snapshots for this VM, sorted by creation time (oldest first for display)
+            $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue | 
+                          Sort-Object CreationTime)
+            
+            if ($snapshots.Count -eq 0) {
+                Write-Output "VM: $vmName - No snapshots found"
+            } else {
+                Write-Output "VM: $vmName - Total snapshots: $($snapshots.Count)"
+                foreach ($snapshot in $snapshots) {
+                    $creationTime = $snapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
+                    Write-Output "  - $($snapshot.Name) (Created: $creationTime)"
+                }
+            }
+        }
+        catch {
+            Write-Output "VM: $vmName - ERROR: $($_.Exception.Message)"
+        }
+      loop: "{{ target_vms }}"
+      register: list_snapshots_results
+      changed_when: false
+      failed_when: false
+      
+    - name: Display all snapshots
+      debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ list_snapshots_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+        
+    - name: Identify last (most recent) snapshot for each VM
+      win_shell: |
+        $ProgressPreference = 'SilentlyContinue'
+        $ErrorActionPreference = 'Stop'
+        $vmName = "{{ item | replace('"', '`"') }}"
+        
+        try {
+            # Get all snapshots for this VM, sorted by creation time (most recent first)
+            $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue | 
+                          Sort-Object CreationTime -Descending)
+            
+            if ($snapshots.Count -eq 0) {
+                Write-Output "VM: $vmName - No snapshots to delete"
+            } else {
+                $lastSnapshot = $snapshots[0]
+                $creationTime = $lastSnapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
+                Write-Output "VM: $vmName - Last snapshot to be deleted: '$($lastSnapshot.Name)' (Created: $creationTime)"
+            }
+        }
+        catch {
+            Write-Output "VM: $vmName - ERROR: $($_.Exception.Message)"
+        }
+      loop: "{{ target_vms }}"
+      register: last_snapshot_info
+      changed_when: false
+      failed_when: false
+      
+    - name: Display last snapshots that will be deleted
+      debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ last_snapshot_info.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+        
     - name: Get and delete last snapshot for each VM
       win_shell: |
         $ProgressPreference = 'SilentlyContinue'
