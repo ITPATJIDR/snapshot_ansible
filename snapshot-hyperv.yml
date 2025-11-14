@@ -72,6 +72,8 @@
         Checkpoint-VM -Name $vmName -SnapshotName $snapshotName -ErrorAction Stop | Out-Null
         "SUCCESS: $vmName"
       loop: "{{ target_vms }}"
+      async: 600
+      poll: 10
       register: snapshot_results
       
     - name: Display snapshot results
