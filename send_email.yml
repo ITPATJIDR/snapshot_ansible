@@ -16,23 +16,46 @@
     email_bcc: "{{ bcc_recipients | default([]) }}"
     
   tasks:
-    - name: Send email notification
-      mail:
-        host: "{{ smtp_host }}"
-        port: "{{ smtp_port }}"
-        username: "{{ smtp_username }}"
-        password: "{{ smtp_password }}"
-        to: "{{ email_to }}"
-        from: "{{ email_from }}"
-        subject: "{{ email_subject }}"
-        body: "{{ email_body }}"
-        cc: "{{ email_cc | default(omit) }}"
-        bcc: "{{ email_bcc | default(omit) }}"
-        secure: starttls
-        charset: utf8
+    - name: Send email notification using Python
+      ansible.builtin.shell: |
+        python3 << 'EOF'
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        
+        # Email configuration
+        smtp_host = "{{ smtp_host }}"
+        smtp_port = {{ smtp_port }}
+        username = "{{ smtp_username }}"
+        password = "{{ smtp_password }}"
+        from_addr = "{{ email_from }}"
+        to_addr = "{{ email_to }}"
+        subject = "{{ email_subject }}"
+        body = """{{ email_body }}"""
+        
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = from_addr
+        msg['To'] = to_addr
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Send email
+        try:
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            server.starttls()
+            server.login(username, password)
+            server.send_message(msg)
+            server.quit()
+            print("Email sent successfully!")
+        except Exception as e:
+            print(f"Failed to send email: {str(e)}")
+            exit(1)
+        EOF
       delegate_to: localhost
       no_log: true
+      register: email_result
       
-    - name: Display success message
+    - name: Display email result
       ansible.builtin.debug:
-        msg: "Email sent successfully to {{ email_to }}"
+        msg: "{{ email_result.stdout_lines }}"
