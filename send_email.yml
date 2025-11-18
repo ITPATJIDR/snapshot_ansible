@@ -1,0 +1,38 @@
+---
+- name: Send Email via SMTP
+  hosts: localhost
+  gather_facts: false
+  
+  vars:
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    smtp_username: "{{ email_username | default('ittipatjitrada@gmail.com') }}"
+    smtp_password: "{{ email_password | default('lsex hcfu pmaf stre') }}"
+    email_from: "{{ smtp_username }}"
+    email_to: "{{ recipient_email | default(smtp_username) }}"
+    email_subject: "{{ subject | default('Notification from Ansible AWX') }}"
+    email_body: "{{ body | default('This is an automated email sent from Ansible AWX.') }}"
+    email_cc: "{{ cc_recipients | default([]) }}"
+    email_bcc: "{{ bcc_recipients | default([]) }}"
+    
+  tasks:
+    - name: Send email notification
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_username }}"
+        password: "{{ smtp_password }}"
+        to: "{{ email_to }}"
+        from: "{{ email_from }}"
+        subject: "{{ email_subject }}"
+        body: "{{ email_body }}"
+        cc: "{{ email_cc | default(omit) }}"
+        bcc: "{{ email_bcc | default(omit) }}"
+        secure: starttls
+        charset: utf8
+      delegate_to: localhost
+      no_log: true
+      
+    - name: Display success message
+      ansible.builtin.debug:
+        msg: "Email sent successfully to {{ email_to }}"
