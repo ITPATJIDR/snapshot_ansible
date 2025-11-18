@@ -17,7 +17,7 @@
     
   tasks:
     - name: Send email notification
-      community.general.mail:
+      mail:
         host: "{{ smtp_host }}"
         port: "{{ smtp_port }}"
         username: "{{ smtp_username }}"
