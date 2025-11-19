@@ -2,699 +2,202 @@
 - name: Backup Nginx Service on Oracle Linux
   hosts: all
   gather_facts: yes
-  # backup_path can be set in AWX as an extra variable or survey
-  # Examples:
-  #   - backup_path: "/opt/backups"
-  #   - backup_path: "/tmp/nginx_backups"
-  #   - If not set, defaults to: /opt/nginx_backups
-  #
-  # backup_content can be set in AWX as an extra variable
-  #   - true: Backup website content files (default: false)
-  #   - false: Only backup nginx configuration
-  #
-  # nginx_version can be set in AWX as an extra variable
-  #   - If specified: Install specific version (e.g., "1.20.1", "1.18.0-2.el7")
-  #   - If not set: Install from default repository (not necessarily latest)
-  #   - Examples:
-  #     - nginx_version: "1.20.1"
-  #     - nginx_version: "1.18.0-2.el7"
-  #
-  # use_nginx_official_repo can be set in AWX as an extra variable
-  #   - true: Use official NGINX repository (gets latest stable versions)
-  #   - false: Use default Oracle Linux repository (default: false)
-  #   - Examples:
-  #     - use_nginx_official_repo: true
-  #     - use_nginx_official_repo: false
+  # backup_path: "/opt/backups" (default: /opt/nginx_backups)
+  # backup_content: true/false (default: false - backup website content)
+  # nginx_version: "1.20.1" (optional - install specific version)
+  # use_nginx_official_repo: true/false (default: false - use official repo)
 
   tasks:
-    - name: Get formatted date and time
+    - name: Set backup variables
       set_fact:
-        backup_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
-        backup_time: "{{ ansible_date_time.time }}"
         backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+        backup_folder: "{{ backup_path | default('/opt/nginx_backups') }}/nginx_backup_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
     
-    - name: Set backup path
+    - name: Check if nginx is installed
+      shell: rpm -q nginx &> /dev/null && echo "true" || echo "false"
+      register: nginx_check
+      changed_when: false
+      ignore_errors: yes
+    
+    - name: Set nginx installation status
       set_fact:
-        backup_base_path: "{{ backup_path | default('/opt/nginx_backups') }}"
+        nginx_installed: "{{ nginx_check.stdout | default('false') | bool }}"
     
-    - name: Set backup folder with timestamp
-      set_fact:
-        backup_folder: "{{ backup_base_path }}/nginx_backup_{{ backup_timestamp }}"
+    # Install nginx if not present
+    - block:
+      - name: Setup official NGINX repository
+        block:
+          - name: Detect OS version
+            shell: grep -oE '[0-9]+' /etc/oracle-release 2>/dev/null | head -1 || grep -oE '[0-9]+' /etc/redhat-release 2>/dev/null | head -1 || echo "8"
+            register: os_version
+            changed_when: false
+          
+          - name: Disable nginx module (Oracle Linux 8+)
+            shell: dnf module disable -y nginx 2>/dev/null && dnf module reset -y nginx 2>/dev/null || true
+            ignore_errors: yes
+          
+          - name: Create NGINX repository file
+            copy:
+              content: |
+                [nginx-stable]
+                name=nginx stable repo
+                baseurl=http://nginx.org/packages/centos/{{ os_version.stdout }}/$basearch/
+                gpgcheck=1
+                enabled=1
+                gpgkey=https://nginx.org/keys/nginx_signing.key
+                module_hotfixes=true
+              dest: /etc/yum.repos.d/nginx.repo
+              mode: '0644'
+          
+          - name: Import NGINX GPG key
+            shell: rpm --import https://nginx.org/keys/nginx_signing.key
+            ignore_errors: yes
+        when: use_nginx_official_repo | default(false) | bool
+      
+      - name: Install EPEL repository (for default repo)
+        shell: |
+          if command -v dnf &> /dev/null; then
+              dnf install -y epel-release || true
+          else
+              yum install -y epel-release || true
+          fi
+        when: not (use_nginx_official_repo | default(false) | bool)
+        ignore_errors: yes
+      
+      - name: Install nginx
+        shell: |
+          PKG_MGR=$(command -v dnf || command -v yum)
+          {% if nginx_version is defined and nginx_version != '' %}
+          $PKG_MGR install -y "nginx-{{ nginx_version }}" || $PKG_MGR install -y nginx
+          {% else %}
+          $PKG_MGR install -y nginx
+          {% endif %}
+        register: nginx_install
+      
+      - name: Verify nginx installation
+        shell: rpm -q nginx &> /dev/null && echo "true" || echo "false"
+        register: nginx_verify
+        changed_when: false
+      
+      - name: Update nginx status
+        set_fact:
+          nginx_installed: "{{ nginx_verify.stdout | bool }}"
+      
+      - name: Fail if installation unsuccessful
+        fail:
+          msg: "Failed to install nginx"
+        when: not (nginx_installed | bool)
+      
+      when: not (nginx_installed | bool)
     
-    - name: Check if nginx is installed (using rpm)
+    # Gather nginx information
+    - name: Get nginx information
       shell: |
-        if rpm -q nginx &> /dev/null; then
-            echo "INSTALLED:Yes"
-            rpm -qi nginx | grep -E "^Version|^Release|^Name" | head -3
-        else
-            echo "INSTALLED:No"
-        fi
-      register: nginx_check_rpm
-      ignore_errors: yes
-      changed_when: false
-    
-    - name: Check if nginx is installed (using systemctl)
-      shell: |
-        if systemctl list-unit-files | grep -q "^nginx.service"; then
-            echo "SERVICE:Found"
-        else
-            echo "SERVICE:NotFound"
-        fi
-      register: nginx_check_service
-      ignore_errors: yes
-      changed_when: false
-    
-    - name: Check if nginx binary exists
-      shell: |
-        if command -v nginx &> /dev/null; then
-            echo "BINARY:Found"
-            nginx -v 2>&1
-        else
-            echo "BINARY:NotFound"
-        fi
-      register: nginx_check_binary
-      ignore_errors: yes
-      changed_when: false
-    
-    - name: Determine nginx installation status
-      set_fact:
-        nginx_installed: >-
-          {%- if 'INSTALLED:Yes' in nginx_check_rpm.stdout or 'SERVICE:Found' in nginx_check_service.stdout or 'BINARY:Found' in nginx_check_binary.stdout -%}
-            true
-          {%- else -%}
-            false
-          {%- endif -%}
-    
-    - name: Check if using official NGINX repository
-      set_fact:
-        use_official_repo: "{{ use_nginx_official_repo | default(false) | bool }}"
-    
-    - name: Disable and reset nginx module stream (Oracle Linux 8+)
-      shell: |
-        if command -v dnf &> /dev/null; then
-            dnf module disable -y nginx 2>/dev/null || true
-            dnf module reset -y nginx 2>/dev/null || true
-        fi
-      register: disable_nginx_module
-      when: 
-        - not nginx_installed
-        - use_official_repo
-      ignore_errors: yes
-    
-    - name: Remove existing broken nginx repository files
-      shell: |
-        rm -f /etc/yum.repos.d/nginx*.repo 2>/dev/null || true
-      register: remove_old_repo
-      when: 
-        - not nginx_installed
-        - use_official_repo
-      ignore_errors: yes
-    
-    - name: Detect OS release version (major version only)
-      shell: |
-        if [ -f /etc/oracle-release ]; then
-            # Extract ONLY major version (8.10 -> 8, 9.3 -> 9)
-            cat /etc/oracle-release | grep -oE '[0-9]+' | head -1
-        elif [ -f /etc/redhat-release ]; then
-            # Extract ONLY major version
-            cat /etc/redhat-release | grep -oE '[0-9]+' | head -1
-        elif [ -f /etc/os-release ]; then
-            # Extract ONLY major version
-            grep VERSION_ID /etc/os-release | cut -d'"' -f2 | cut -d'.' -f1
-        else
-            echo "8"
-        fi
-      register: os_release_version
-      ignore_errors: yes
-      changed_when: false
-      when: 
-        - not nginx_installed
-        - use_official_repo
-    
-    - name: Create official NGINX repository file
-      copy:
-        content: |
-          [nginx-stable]
-          name=nginx stable repo
-          baseurl=http://nginx.org/packages/centos/{{ os_release_version.stdout | default('8') }}/$basearch/
-          gpgcheck=1
-          enabled=1
-          gpgkey=https://nginx.org/keys/nginx_signing.key
-          module_hotfixes=true
-        dest: /etc/yum.repos.d/nginx.repo
-        mode: '0644'
-      register: nginx_repo_created
-      when: 
-        - not nginx_installed
-        - use_official_repo
-      ignore_errors: yes
-    
-    - name: Import NGINX GPG key
-      shell: |
-        rpm --import https://nginx.org/keys/nginx_signing.key || true
-      register: nginx_gpg_import
-      ignore_errors: yes
-      when: 
-        - not nginx_installed
-        - use_official_repo
-    
-    - name: Update package cache after adding NGINX repo
-      shell: |
-        if command -v dnf &> /dev/null; then
-            dnf makecache || true
-        elif command -v yum &> /dev/null; then
-            yum makecache || true
-        fi
-      register: update_cache_after_repo
-      ignore_errors: yes
-      when: 
-        - not nginx_installed
-        - use_official_repo
-    
-    - name: Check if EPEL repository is available (for Oracle Linux)
-      shell: |
-        if command -v dnf &> /dev/null; then
-            dnf repolist enabled | grep -i epel || echo "EPEL:NotEnabled"
-        elif command -v yum &> /dev/null; then
-            yum repolist enabled | grep -i epel || echo "EPEL:NotEnabled"
-        else
-            echo "EPEL:Unknown"
-        fi
-      register: epel_check
-      ignore_errors: yes
-      changed_when: false
-      when: 
-        - not nginx_installed
-        - not use_official_repo
-    
-    - name: Enable EPEL repository if needed
-      shell: |
-        if command -v dnf &> /dev/null; then
-            dnf install -y epel-release || true
-        elif command -v yum &> /dev/null; then
-            yum install -y epel-release || true
-        fi
-      register: epel_install
-      ignore_errors: yes
-      when: 
-        - not nginx_installed
-        - not use_official_repo
-        - "'EPEL:NotEnabled' in epel_check.stdout | default('')"
-    
-    - name: Install nginx (specific version if specified)
-      shell: |
-        if command -v dnf &> /dev/null; then
-            if [ -n "{{ nginx_version | default('') }}" ]; then
-                dnf install -y "nginx-{{ nginx_version }}" || dnf install -y nginx
-            else
-                dnf install -y nginx
-            fi
-        elif command -v yum &> /dev/null; then
-            if [ -n "{{ nginx_version | default('') }}" ]; then
-                yum install -y "nginx-{{ nginx_version }}" || yum install -y nginx
-            else
-                yum install -y nginx
-            fi
-        else
-            echo "ERROR: No package manager found (dnf/yum)"
-            exit 1
-        fi
-      register: nginx_install
-      when: not nginx_installed
-    
-    - name: Display nginx installation result
-      debug:
-        msg:
-          - "=========================================="
-          - "Nginx Installation"
-          - "Status: {{ 'Installed' if nginx_install is succeeded else 'Failed' }}"
-          - "=========================================="
-      when: not nginx_installed
-    
-    - name: Display nginx version information
-      debug:
-        msg: "Version Requested: {{ nginx_version }}"
-      when: 
-        - not nginx_installed
-        - nginx_version is defined
-        - nginx_version != ''
-    
-    - name: Display default repository installation message
-      debug:
-        msg: "Version: Installed from default repository"
-      when: 
-        - not nginx_installed
-        - nginx_version is not defined or nginx_version == ''
-    
-    - name: Verify nginx installation after install
-      shell: |
-        if rpm -q nginx &> /dev/null; then
-            echo "INSTALLED:Yes"
-            rpm -qi nginx | grep -E "^Version|^Release|^Name" | head -3
-        else
-            echo "INSTALLED:No"
-        fi
-      register: nginx_verify_after_install
-      ignore_errors: yes
-      changed_when: false
-      when: not nginx_installed
-    
-    - name: Update nginx installation status after install
-      set_fact:
-        nginx_installed: >-
-          {%- if 'INSTALLED:Yes' in nginx_verify_after_install.stdout | default('') -%}
-            true
-          {%- else -%}
-            false
-          {%- endif -%}
-      when: not nginx_installed
-    
-    - name: Fail if nginx installation failed
-      fail:
-        msg: "Failed to install nginx. Please check the installation logs."
-      when: 
-        - not nginx_installed
-        - nginx_install is failed
-    
-    - name: Get nginx version
-      shell: |
-        nginx -v 2>&1 | head -1
-      register: nginx_version_output
+        nginx -v 2>&1
+      register: nginx_version_info
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
     
-    - name: Get nginx package information
-      shell: |
-        rpm -qi nginx 2>/dev/null | grep -E "^Name|^Version|^Release|^Install Date|^Build Date" || echo "Package info not available"
-      register: nginx_package_info
+    - name: Get nginx service status
+      shell: systemctl is-active nginx 2>/dev/null || echo "inactive"
+      register: nginx_status
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
     
-    - name: Check nginx service status
+    - name: Get nginx configuration directory
       shell: |
-            systemctl is-active nginx 2>/dev/null || echo "inactive"
-      register: nginx_service_status
-      ignore_errors: yes
+        if [ -d /etc/nginx ]; then
+            echo "/etc/nginx"
+        else
+            nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | xargs dirname || echo "/etc/nginx"
+        fi
+      register: nginx_config_dir
       changed_when: false
       when: nginx_installed
     
-    - name: Check nginx service enabled status
-      shell: |
-        systemctl is-enabled nginx 2>/dev/null || echo "disabled"
-      register: nginx_service_enabled
-      ignore_errors: yes
+    - name: Get nginx main configuration file
+      shell: nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | head -1 || echo "/etc/nginx/nginx.conf"
+      register: nginx_main_config
       changed_when: false
       when: nginx_installed
     
-    - name: Get nginx configuration test result
-      shell: |
-        nginx -t 2>&1
-      register: nginx_config_test
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
+    # Perform backup
     - name: Create backup directory
       file:
         path: "{{ backup_folder }}"
         state: directory
         mode: '0755'
-      register: backup_dir_result
       when: nginx_installed
     
-    - name: Display backup information
-      debug:
-        msg:
-          - "=========================================="
-          - "Nginx Backup Information"
-          - "Backup Path: {{ backup_folder }}"
-          - "Date: {{ backup_date }}"
-          - "Time: {{ backup_time }}"
-          - "Host: {{ inventory_hostname }}"
-          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
-          - "Nginx Version: {{ nginx_version_output.stdout | default('Unknown') }}"
-          - "Service Status: {{ nginx_service_status.stdout | default('Unknown') }}"
-          - "Service Enabled: {{ nginx_service_enabled.stdout | default('Unknown') }}"
-          - "Backup Content: {{ backup_content | default(false) }}"
-          - "=========================================="
-      when: nginx_installed
-    
-    - name: Find nginx configuration directory
-      shell: |
-        # Try common nginx config locations
-        if [ -d /etc/nginx ]; then
-            echo "/etc/nginx"
-        elif [ -d /usr/local/nginx/conf ]; then
-            echo "/usr/local/nginx/conf"
-        else
-            # Try to find from nginx -t output
-            nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | xargs dirname 2>/dev/null || echo "/etc/nginx"
-        fi
-      register: nginx_config_dir
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
-    - name: Get nginx main configuration file path
-      shell: |
-        nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | head -1 || echo "/etc/nginx/nginx.conf"
-      register: nginx_main_config
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
-    - name: Ensure nginx configuration directory exists
-      file:
-        path: "{{ nginx_config_dir.stdout | default('/etc/nginx') }}"
-        state: directory
-        mode: '0755'
-      when: nginx_installed
-    
-    - name: Ensure nginx conf.d directory exists
-      file:
-        path: "{{ nginx_config_dir.stdout | default('/etc/nginx') }}/conf.d"
-        state: directory
-        mode: '0755'
-      when: nginx_installed
-    
-    - name: Check if nginx main configuration file exists
-      stat:
-        path: "{{ nginx_main_config.stdout }}"
-      register: nginx_config_stat
-      when: nginx_installed
-    
-    - name: Create default nginx.conf if it doesn't exist
-      copy:
-        content: |
-          user nginx;
-          worker_processes auto;
-          error_log /var/log/nginx/error.log;
-          pid /run/nginx.pid;
-          
-          include /usr/share/nginx/modules/*.conf;
-          
-          events {
-              worker_connections 1024;
-          }
-          
-          http {
-              log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                              '$status $body_bytes_sent "$http_referer" '
-                              '"$http_user_agent" "$http_x_forwarded_for"';
-          
-              access_log /var/log/nginx/access.log main;
-          
-              sendfile on;
-              tcp_nopush on;
-              tcp_nodelay on;
-              keepalive_timeout 65;
-              types_hash_max_size 2048;
-          
-              include /etc/nginx/mime.types;
-              default_type application/octet-stream;
-          
-              include /etc/nginx/conf.d/*.conf;
-          
-              server {
-                  listen 80 default_server;
-                  listen [::]:80 default_server;
-                  server_name _;
-                  root /usr/share/nginx/html;
-          
-                  location / {
-                  }
-          
-                  error_page 404 /404.html;
-                  location = /404.html {
-                  }
-          
-                  error_page 500 502 503 504 /50x.html;
-                  location = /50x.html {
-                  }
-              }
-          }
-        dest: "{{ nginx_main_config.stdout }}"
-        mode: '0644'
-      when: 
-        - nginx_installed
-        - not nginx_config_stat.stat.exists
-      register: default_config_created
-    
-    - name: Display message if default config was created
-      debug:
-        msg: "Created default nginx.conf at {{ nginx_main_config.stdout }}"
-      when: 
-        - nginx_installed
-        - default_config_created is defined
-        - default_config_created.changed
-    
-    - name: Ensure nginx log directory exists
-      file:
-        path: /var/log/nginx
-        state: directory
-        mode: '0755'
-      when: 
-        - nginx_installed
-        - default_config_created is defined
-        - default_config_created.changed
-    
-    - name: Ensure nginx html directory exists
-      file:
-        path: /usr/share/nginx/html
-        state: directory
-        mode: '0755'
-      when: 
-        - nginx_installed
-        - default_config_created is defined
-        - default_config_created.changed
-    
-    - name: Create default index.html if it doesn't exist
-      copy:
-        content: |
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>Welcome to nginx!</title>
-          </head>
-          <body>
-              <h1>Welcome to nginx!</h1>
-              <p>If you see this page, the nginx web server is successfully installed and working.</p>
-          </body>
-          </html>
-        dest: /usr/share/nginx/html/index.html
-        mode: '0644'
-      when: 
-        - nginx_installed
-        - default_config_created is defined
-        - default_config_created.changed
-    
-    - name: Backup nginx main configuration file
+    - name: Backup nginx main configuration
       copy:
         src: "{{ nginx_main_config.stdout }}"
         dest: "{{ backup_folder }}/nginx.conf"
         remote_src: yes
         mode: '0644'
-      register: main_config_backup
       when: nginx_installed
     
-    - name: Backup entire nginx configuration directory
+    - name: Backup nginx configuration directory
       shell: |
-        config_dir="{{ nginx_config_dir.stdout }}"
-        backup_dir="{{ backup_folder }}/etc_nginx"
-        
-        if [ -d "$config_dir" ]; then
-            mkdir -p "$backup_dir"
-            cp -r "$config_dir"/* "$backup_dir/" 2>/dev/null || true
-            echo "SUCCESS: Configuration directory backed up from $config_dir"
-        else
-            echo "WARNING: Configuration directory $config_dir not found"
-        fi
-      register: config_dir_backup
-      ignore_errors: yes
+        cp -r "{{ nginx_config_dir.stdout }}" "{{ backup_folder }}/etc_nginx"
       when: nginx_installed
     
     - name: Backup nginx systemd service file
       shell: |
-        service_files=(
-          "/usr/lib/systemd/system/nginx.service"
-          "/etc/systemd/system/nginx.service"
-          "/lib/systemd/system/nginx.service"
-        )
-        
-        for service_file in "${service_files[@]}"; do
-            if [ -f "$service_file" ]; then
-                cp "$service_file" "{{ backup_folder }}/nginx.service"
-                echo "SUCCESS: Service file backed up from $service_file"
-                exit 0
-            fi
+        for svc in /usr/lib/systemd/system/nginx.service /etc/systemd/system/nginx.service /lib/systemd/system/nginx.service; do
+            [ -f "$svc" ] && cp "$svc" "{{ backup_folder }}/nginx.service" && exit 0
         done
-        
-        echo "WARNING: Nginx service file not found in standard locations"
-      register: service_file_backup
       ignore_errors: yes
       when: nginx_installed
     
-    - name: Get nginx process information
+    - name: Backup website content (if requested)
       shell: |
-        ps aux | grep -E "nginx: (master|worker)" | grep -v grep | head -5 || echo "No nginx processes found"
-      register: nginx_processes
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
-    - name: Get nginx listening ports
-      shell: |
-        netstat -tlnp 2>/dev/null | grep nginx || ss -tlnp 2>/dev/null | grep nginx || echo "Unable to determine listening ports"
-      register: nginx_listening_ports
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
-    - name: Get list of nginx virtual hosts/sites
-      shell: |
-        config_dir="{{ nginx_config_dir.stdout }}"
-        sites=()
-        
-        # Check for sites-available and sites-enabled (Debian-style)
-        if [ -d "$config_dir/sites-available" ]; then
-            for site in "$config_dir/sites-available"/*; do
-                if [ -f "$site" ]; then
-                    sites+=("$(basename "$site")")
-                fi
-            done
-        fi
-        
-        # Check for conf.d directory (RHEL/Oracle Linux style)
-        if [ -d "$config_dir/conf.d" ]; then
-            for conf in "$config_dir/conf.d"/*.conf; do
-                if [ -f "$conf" ]; then
-                    sites+=("conf.d/$(basename "$conf")")
-                fi
-            done
-        fi
-        
-        # Output as JSON array
-        printf '%s\n' "${sites[@]}" | jq -R . | jq -s . 2>/dev/null || printf '%s\n' "${sites[@]}"
-      register: nginx_sites
-      ignore_errors: yes
-      changed_when: false
-      when: nginx_installed
-    
-    - name: Backup website content files (if requested)
-      shell: |
-        config_dir="{{ nginx_config_dir.stdout }}"
-        backup_dir="{{ backup_folder }}/website_content"
-        
-        # Extract document root paths from nginx config
-        doc_roots=$(grep -r "root " "$config_dir"/*.conf "$config_dir"/conf.d/*.conf 2>/dev/null | \
-                    grep -v "^#" | awk '{print $2}' | sed 's/;//' | sort -u)
-        
-        if [ -n "$doc_roots" ]; then
-            mkdir -p "$backup_dir"
-            echo "$doc_roots" | while read -r doc_root; do
-                if [ -d "$doc_root" ]; then
-                    site_name=$(echo "$doc_root" | tr '/' '_' | sed 's/^_//')
-                    cp -r "$doc_root" "$backup_dir/$site_name" 2>/dev/null || true
-                    echo "Backed up: $doc_root -> $backup_dir/$site_name"
-                fi
-            done
-            echo "SUCCESS: Website content backed up"
-        else
-            echo "INFO: No document roots found or content backup not requested"
-        fi
-      register: content_backup
+        mkdir -p "{{ backup_folder }}/website_content"
+        grep -rh "root " "{{ nginx_config_dir.stdout }}"/*.conf "{{ nginx_config_dir.stdout }}"/conf.d/*.conf 2>/dev/null | \
+        grep -v "^#" | awk '{print $2}' | sed 's/;//' | sort -u | while read doc_root; do
+            [ -d "$doc_root" ] && cp -r "$doc_root" "{{ backup_folder }}/website_content/$(echo $doc_root | tr '/' '_' | sed 's/^_//')" 2>/dev/null
+        done
       ignore_errors: yes
       when: 
         - nginx_installed
         - backup_content | default(false) | bool
     
-    - name: Create nginx backup summary file
+    - name: Create backup summary
       copy:
         content: |
           Nginx Backup Summary
           ===================
-          Date: {{ backup_date }}
-          Time: {{ backup_time }}
+          Date: {{ ansible_date_time.date }}
+          Time: {{ ansible_date_time.time }}
           Host: {{ inventory_hostname }}
           OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
-          
           Backup Location: {{ backup_folder }}
           
           Nginx Information:
-          - Version: {{ nginx_version_output.stdout | default('Unknown') }}
-          - Service Status: {{ nginx_service_status.stdout | default('Unknown') }}
-          - Service Enabled: {{ nginx_service_enabled.stdout | default('Unknown') }}
-          - Configuration Directory: {{ nginx_config_dir.stdout | default('Unknown') }}
-          - Main Config File: {{ nginx_main_config.stdout | default('Unknown') }}
-          
-          Package Information:
-          {{ nginx_package_info.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
-          
-          Configuration Test Result:
-          {{ nginx_config_test.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
-          
-          Nginx Processes:
-          {{ nginx_processes.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
-          
-          Listening Ports:
-          {{ nginx_listening_ports.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
-          
-          Virtual Hosts/Sites Found:
-          {% if nginx_sites.stdout is defined and nginx_sites.stdout != '' %}
-          {{ nginx_sites.stdout_lines | default(['N/A']) | join('\n') | indent(2) }}
-          {% else %}
-            N/A
-          {% endif %}
+          - Version: {{ nginx_version_info.stdout | default('Unknown') }}
+          - Service Status: {{ nginx_status.stdout | default('Unknown') }}
+          - Config Directory: {{ nginx_config_dir.stdout | default('Unknown') }}
+          - Main Config: {{ nginx_main_config.stdout | default('Unknown') }}
           
           Files Backed Up:
           - nginx.conf (main configuration)
-          - etc_nginx/ (entire configuration directory)
-          - nginx.service (systemd service file)
+          - etc_nginx/ (configuration directory)
+          - nginx.service (systemd service)
           {% if backup_content | default(false) %}
-          - website_content/ (website content files)
+          - website_content/ (website files)
           {% endif %}
-          
-          Backup completed successfully.
         dest: "{{ backup_folder }}/backup_summary.txt"
         mode: '0644'
-      register: summary_result
-      ignore_errors: yes
-      failed_when: false
       when: nginx_installed
     
-    - name: Create backup manifest (list of all files)
-      shell: |
-        find "{{ backup_folder }}" -type f -exec ls -lh {} \; | awk '{print $9, $5}' > "{{ backup_folder }}/backup_manifest.txt"
-        echo "SUCCESS: Backup manifest created"
-      register: manifest_result
-      ignore_errors: yes
-      when: nginx_installed
-    
-    - name: Display backup results
+    - name: Display backup completion
       debug:
         msg:
           - "=========================================="
-          - "Nginx Backup Completed Successfully"
-          - "Backup Location: {{ backup_folder }}"
-          - "Main Config: {{ 'Backed up' if main_config_backup is succeeded else 'Failed' }}"
-          - "Config Directory: {{ 'Backed up' if config_dir_backup is succeeded else 'Failed' }}"
-          - "Service File: {{ 'Backed up' if service_file_backup is succeeded else 'Failed' }}"
+          - "Nginx Backup Completed"
+          - "Location: {{ backup_folder }}"
+          - "Version: {{ nginx_version_info.stdout | default('Unknown') }}"
           - "=========================================="
       when: nginx_installed
-    
-    - name: Display website content backup result
-      debug:
-        msg: "Website Content: {{ 'Backed up' if content_backup is succeeded else 'Not backed up' }}"
-      when: 
-        - nginx_installed
-        - backup_content | default(false) | bool
-    
-    - name: Display nginx sites found
-      debug:
-        msg: "{{ nginx_sites.stdout_lines }}"
-      when: 
-        - nginx_installed
-        - nginx_sites.stdout is defined
-        - nginx_sites.stdout != ''
