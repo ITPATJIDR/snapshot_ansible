@@ -445,7 +445,7 @@
         - nginx_installed
         - install_updates | default(false) | bool
     
-    - name: Restart nginx service if needed
+    - name: Restart nginx service after patching
       systemd:
         name: nginx
         state: restarted
@@ -454,6 +454,14 @@
         - install_updates | default(false) | bool
         - nginx_upgrade is succeeded
       ignore_errors: yes
+      register: nginx_restarted
+    
+    - name: Display service restart status
+      debug:
+        msg: "Nginx service restarted: {{ 'Yes' if nginx_restarted is succeeded else 'Failed/Skipped' }}"
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
     
     - name: Display patching summary
       debug:
