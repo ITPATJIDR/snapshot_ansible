@@ -192,6 +192,14 @@
         mode: '0644'
       when: nginx_installed
     
+    - name: Stop nginx service after backup
+      systemd:
+        name: nginx
+        state: stopped
+      when: nginx_installed
+      ignore_errors: yes
+      register: nginx_stopped
+    
     - name: Display backup completion
       debug:
         msg:
