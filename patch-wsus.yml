@@ -182,7 +182,7 @@
           - "KB: {{ item.kb | default('N/A') }}"
           - "ID: {{ item.id }}"
           - "Categories: {{ item.categories | default([]) | join(', ') }}"
-      loop: "{{ available_updates.updates | default([]) }}"
+      loop: "{{ available_updates.updates | default([], true) }}"
       when: available_updates.found_update_count | default(0) > 0
     
     - name: Install Windows updates from WSUS
@@ -279,7 +279,7 @@
           - "Title: {{ item.title }}"
           - "KB: {{ item.kb | default('N/A') }}"
           - "ID: {{ item.id }}"
-      loop: "{{ install_result.updates | default([]) }}"
+      loop: "{{ install_result.updates | default([], true) }}"
       when: 
         - install_updates | default(false) | bool
         - install_result.updates is defined
