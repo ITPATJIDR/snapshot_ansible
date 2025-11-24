@@ -1,5 +1,5 @@
 ---
-- name: Patch IIS with WSUS
+- name: Patch Windows Server with WSUS
   hosts: all
   gather_facts: yes
   # wsus_server can be set in AWX as an extra variable
@@ -19,6 +19,14 @@
   #   - List: ["SecurityUpdates", "UpdateRollups", "CriticalUpdates"]
   #   - Empty/not set: [] or leave unset (will check all update categories)
   #   Valid categories: SecurityUpdates, UpdateRollups, CriticalUpdates, DefinitionUpdates, FeaturePacks, ServicePacks, Tools, Updates
+  #
+  # services_to_check can be set in AWX as an extra variable
+  # Examples:
+  #   - "IIS" - Check IIS only
+  #   - "SQL Server" - Check SQL Server only
+  #   - "IIS,SQL Server" - Check both IIS and SQL Server
+  #   - "IIS,SQL Server,Exchange" - Check multiple services
+  #   - Empty/not set: Skip service checks (patch all)
   
   tasks:
     - name: Get formatted date and time
@@ -26,35 +34,92 @@
         patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
         patch_time: "{{ ansible_date_time.time }}"
     
-    - name: Check if IIS is installed
+    - name: Parse services to check
+      set_fact:
+        services_list: "{{ services_to_check.split(',') | map('trim') | list if services_to_check is defined and services_to_check | length > 0 else [] }}"
+    
+    - name: Check installed services and versions
       win_shell: |
-        $feature = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
-        if ($feature) {
-            Write-Output "INSTALLED:$($feature.Installed)"
-        } else {
-            Write-Output "INSTALLED:False"
+        $services = @()
+        $checkServices = "{{ services_list | join(',') }}"
+        
+        if ([string]::IsNullOrEmpty($checkServices)) {
+            Write-Output "NO_SERVICES_SPECIFIED"
+            exit 0
         }
-      register: iis_check
+        
+        $serviceArray = $checkServices -split ','
+        
+        foreach ($svc in $serviceArray) {
+            $svc = $svc.Trim()
+            $result = @{
+                Name = $svc
+                Installed = $false
+                Version = "Unknown"
+                Status = "Not Found"
+            }
+            
+            switch ($svc) {
+                "IIS" {
+                    $feature = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+                    if ($feature -and $feature.Installed) {
+                        $result.Installed = $true
+                        $result.Status = "Installed"
+                        try {
+                            Import-Module WebAdministration -ErrorAction SilentlyContinue
+                            $iisVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\InetStp" -ErrorAction SilentlyContinue).VersionString
+                            if ($iisVersion) {
+                                $result.Version = $iisVersion
+                            }
+                        } catch {}
+                    }
+                }
+                "SQL Server" {
+                    $sqlServices = Get-Service -Name "MSSQL*" -ErrorAction SilentlyContinue
+                    if ($sqlServices) {
+                        $result.Installed = $true
+                        $result.Status = "Installed"
+                        try {
+                            $sqlVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue)
+                            if ($sqlVersion) {
+                                $instanceName = $sqlVersion.PSObject.Properties.Name | Select-Object -First 1
+                                $result.Version = $instanceName
+                            }
+                        } catch {}
+                    }
+                }
+                "Exchange" {
+                    $exchService = Get-Service -Name "MSExchangeServiceHost" -ErrorAction SilentlyContinue
+                    if ($exchService) {
+                        $result.Installed = $true
+                        $result.Status = "Installed"
+                        try {
+                            $exchVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Setup" -ErrorAction SilentlyContinue).MsiProductMajor
+                            if ($exchVersion) {
+                                $result.Version = $exchVersion
+                            }
+                        } catch {}
+                    }
+                }
+                default {
+                    # Generic service check
+                    $genericService = Get-Service -Name "*$svc*" -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($genericService) {
+                        $result.Installed = $true
+                        $result.Status = $genericService.Status
+                    }
+                }
+            }
+            
+            Write-Output "SERVICE:$($result.Name)|INSTALLED:$($result.Installed)|VERSION:$($result.Version)|STATUS:$($result.Status)"
+        }
+      register: services_check
+      when: services_list | length > 0
       ignore_errors: yes
     
-    - name: Fail if IIS is not installed
-      fail:
-        msg: "IIS (Web-Server) is not installed on this host"
-      when: "'True' not in iis_check.stdout"
-    
-    - name: Get IIS version before patching
-      win_shell: |
-        Import-Module WebAdministration -ErrorAction SilentlyContinue
-        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
-        if (-not $version) {
-            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
-        }
-        if (-not $version) {
-            $version = "Unknown"
-        }
-        Write-Output $version
-      register: iis_version_before
-      ignore_errors: yes
+    - name: Display services check results
+      debug:
+        msg: "{{ services_check.stdout_lines | default(['No services specified to check']) }}"
     
     - name: Get Windows version and build
       win_shell: |
@@ -129,12 +194,13 @@
       debug:
         msg:
           - "=========================================="
-          - "IIS WSUS Patching Information"
+          - "Windows WSUS Patching Information"
           - "Date: {{ patch_date }}"
           - "Time: {{ patch_time }}"
           - "Host: {{ inventory_hostname }}"
           - "Windows: {{ windows_info.stdout }}"
-          - "IIS Version (Before): {{ iis_version_before.stdout | default('Unknown') }}"
+          - "Services to Check: {{ services_to_check | default('None - Patch all') }}"
+          - "Services Status: {{ services_check.stdout_lines | default(['No services specified']) }}"
           - "WSUS Server: {{ wsus_server | default('Default Windows Update') }}"
           - "WSUS Config: {{ wsus_config_check.stdout_lines | default([]) }}"
           - "Install Updates: {{ install_updates | default(false) }}"
@@ -237,39 +303,74 @@
         - reboot_if_needed | default(false) | bool
         - "'Yes' in (reboot_check.stdout | default(''))"
     
-    - name: Get IIS version after patching
+    - name: Verify services are running after updates
       win_shell: |
-        Import-Module WebAdministration -ErrorAction SilentlyContinue
-        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
-        if (-not $version) {
-            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+        $services = @()
+        $checkServices = "{{ services_list | join(',') }}"
+        
+        if ([string]::IsNullOrEmpty($checkServices)) {
+            Write-Output "NO_SERVICES_TO_VERIFY"
+            exit 0
         }
-        if (-not $version) {
-            $version = "Unknown"
-        }
-        Write-Output $version
-      register: iis_version_after
-      ignore_errors: yes
-      when: install_updates | default(false) | bool
-    
-    - name: Verify IIS is running after updates
-      win_shell: |
-        $service = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
-        if ($service) {
-            if ($service.Status -eq 'Running') {
-                Write-Output "STATUS:Running"
-            } else {
-                Write-Output "STATUS:$($service.Status)"
-                Start-Service -Name W3SVC -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 3
-                $service = Get-Service -Name W3SVC
-                Write-Output "STATUS_AFTER:$($service.Status)"
+        
+        $serviceArray = $checkServices -split ','
+        
+        foreach ($svc in $serviceArray) {
+            $svc = $svc.Trim()
+            
+            switch ($svc) {
+                "IIS" {
+                    $service = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+                    if ($service) {
+                        if ($service.Status -ne 'Running') {
+                            Start-Service -Name W3SVC -ErrorAction SilentlyContinue
+                            Start-Sleep -Seconds 3
+                            $service = Get-Service -Name W3SVC
+                        }
+                        Write-Output "SERVICE:IIS|STATUS:$($service.Status)"
+                    } else {
+                        Write-Output "SERVICE:IIS|STATUS:NotFound"
+                    }
+                }
+                "SQL Server" {
+                    $sqlServices = Get-Service -Name "MSSQL*" -ErrorAction SilentlyContinue
+                    foreach ($sqlSvc in $sqlServices) {
+                        if ($sqlSvc.Status -ne 'Running' -and $sqlSvc.StartType -ne 'Disabled') {
+                            Start-Service -Name $sqlSvc.Name -ErrorAction SilentlyContinue
+                            Start-Sleep -Seconds 3
+                        }
+                        $sqlSvc = Get-Service -Name $sqlSvc.Name
+                        Write-Output "SERVICE:$($sqlSvc.DisplayName)|STATUS:$($sqlSvc.Status)"
+                    }
+                }
+                "Exchange" {
+                    $exchServices = Get-Service -Name "MSExchange*" -ErrorAction SilentlyContinue
+                    foreach ($exchSvc in $exchServices) {
+                        if ($exchSvc.Status -ne 'Running' -and $exchSvc.StartType -ne 'Disabled') {
+                            Start-Service -Name $exchSvc.Name -ErrorAction SilentlyContinue
+                            Start-Sleep -Seconds 2
+                        }
+                        $exchSvc = Get-Service -Name $exchSvc.Name
+                        Write-Output "SERVICE:$($exchSvc.DisplayName)|STATUS:$($exchSvc.Status)"
+                    }
+                }
+                default {
+                    $genericService = Get-Service -Name "*$svc*" -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($genericService) {
+                        if ($genericService.Status -ne 'Running' -and $genericService.StartType -ne 'Disabled') {
+                            Start-Service -Name $genericService.Name -ErrorAction SilentlyContinue
+                            Start-Sleep -Seconds 2
+                        }
+                        $genericService = Get-Service -Name $genericService.Name
+                        Write-Output "SERVICE:$($genericService.DisplayName)|STATUS:$($genericService.Status)"
+                    }
+                }
             }
-        } else {
-            Write-Output "STATUS:NotFound"
         }
-      register: iis_service_check
-      when: install_updates | default(false) | bool
+      register: services_status_check
+      when: 
+        - install_updates | default(false) | bool
+        - services_list | length > 0
       ignore_errors: yes
     
     - name: Display installed updates
@@ -288,16 +389,16 @@
       debug:
         msg:
           - "=========================================="
-          - "IIS WSUS Patching Summary"
+          - "Windows WSUS Patching Summary"
           - "Date: {{ patch_date }}"
           - "Time: {{ patch_time }}"
           - "Host: {{ inventory_hostname }}"
           - "WSUS Server: {{ wsus_server | default('Default Windows Update') }}"
-          - "IIS Version (Before): {{ iis_version_before.stdout | default('Unknown') }}"
-          - "IIS Version (After): {{ iis_version_after.stdout | default('Unknown') if install_updates | default(false) else 'N/A (updates not installed)' }}"
+          - "Services Checked: {{ services_to_check | default('None - Patch all') }}"
+          - "Services Status (Before): {{ services_check.stdout_lines | default(['N/A']) }}"
+          - "Services Status (After): {{ services_status_check.stdout_lines | default(['N/A']) }}"
           - "Available Updates: {{ available_updates.found_update_count | default(0) }}"
           - "Updates Installed: {{ install_result.installed_update_count | default(0) if install_updates | default(false) else 0 }}"
           - "Reboot Required: {{ 'Yes' if ('Yes' in (reboot_check.stdout | default(''))) else 'No' if install_updates | default(false) else 'N/A' }}"
-          - "IIS Service Status: {{ iis_service_check.stdout | default('N/A') }}"
           - "=========================================="
 
