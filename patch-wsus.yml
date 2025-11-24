@@ -83,11 +83,11 @@
     
     - name: Set WSUS server variable
       set_fact:
-        wsus_server_url: "{{ wsus_server | default('') }}"
+        wsus_server_url: "{{ wsus_server }}"
     
     - name: Configure WSUS server settings (if wsus_server is provided)
       win_shell: |
-        $wsusServer = '{{ wsus_server_url }}'
+        $wsusServer = "{{ wsus_server_url }}"
         
         if ([string]::IsNullOrEmpty($wsusServer)) {
             Write-Output "SKIPPED:No WSUS server specified"
