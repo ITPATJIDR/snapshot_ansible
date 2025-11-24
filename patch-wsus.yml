@@ -187,6 +187,7 @@
         category_names: "{{ update_categories | default(omit) }}"
         state: installed
         log_path: C:\ansible_wsus_updates.log
+        server_selection: "managed_server"
         reboot: no
       register: install_result
       when: 
