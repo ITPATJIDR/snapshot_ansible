@@ -83,48 +83,47 @@
     
     - name: Set WSUS server variable
       set_fact:
-        wsus_server_url: "{{ wsus_server }}"
+        wsus_server_url: "{{ wsus_server | default('') }}"
     
-    - name: Configure WSUS server settings (if wsus_server is provided)
-      win_shell: |
-        $wsusServer = "http://your-wsus-server.domain.com:8530"
-        
-        if ([string]::IsNullOrEmpty($wsusServer)) {
-            Write-Output "SKIPPED:No WSUS server specified"
-            exit 0
-        }
-        
-        $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
-        $auPath = "$regPath\AU"
-        
-        # Create registry paths if they don't exist
-        if (-not (Test-Path $regPath)) {
-            New-Item -Path $regPath -Force | Out-Null
-        }
-        if (-not (Test-Path $auPath)) {
-            New-Item -Path $auPath -Force | Out-Null
-        }
-        
-        # Set WSUS server
-        Set-ItemProperty -Path $regPath -Name WUServer -Value $wsusServer -Type String
-        Set-ItemProperty -Path $regPath -Name WUStatusServer -Value $wsusServer -Type String
-        
-        # Enable use of WSUS server
-        Set-ItemProperty -Path $auPath -Name UseWUServer -Value 1 -Type DWord
-        
-        # Configure automatic update options (4 = Auto download and schedule install)
-        Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 -Type DWord
-        
-        Write-Output "CONFIGURED:WSUS server set to $wsusServer"
-        
-        # Restart Windows Update service to apply changes
-        Restart-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-        
-        Write-Output "SERVICE_RESTARTED:Windows Update service restarted"
-      register: wsus_config
-      when: wsus_server_url is defined and wsus_server_url != ''
-      ignore_errors: yes
+    - name: Ensure WSUS policy key exists
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+        state: present
+      when: wsus_server_url | length > 0
+    
+    - name: Ensure WSUS AU subkey exists
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+        state: present
+      when: wsus_server_url | length > 0
+    
+    - name: Configure WSUS server URLs
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+        name: "{{ item }}"
+        data: "{{ wsus_server_url }}"
+        type: string
+      loop:
+        - WUServer
+        - WUStatusServer
+      when: wsus_server_url | length > 0
+    
+    - name: Configure automatic update settings
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+        name: "{{ item.name }}"
+        data: "{{ item.value }}"
+        type: dword
+      loop:
+        - { name: UseWUServer, value: 1 }
+        - { name: AUOptions, value: 4 }
+      when: wsus_server_url | length > 0
+    
+    - name: Restart Windows Update service to apply WSUS settings
+      win_service:
+        name: wuauserv
+        state: restarted
+      when: wsus_server_url | length > 0
     
     - name: Display patching information
       debug:
