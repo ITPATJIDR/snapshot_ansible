@@ -1,0 +1,300 @@
+---
+- name: Patch IIS with WSUS
+  hosts: all
+  gather_facts: yes
+  # wsus_server can be set in AWX as an extra variable
+  #   - Format: wsus_server: "http://wsus-server.domain.com:8530" or "https://wsus-server.domain.com:8531"
+  #   - If not set, will use default Windows Update settings
+  #
+  # install_updates can be set in AWX as an extra variable
+  #   - true: Install available updates (default: false - only check)
+  #   - false: Only check for available updates without installing
+  #
+  # reboot_if_needed can be set in AWX as an extra variable
+  #   - true: Automatically reboot if required after updates (default: false)
+  #   - false: Do not reboot automatically
+  #
+  # update_categories can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - List: ["SecurityUpdates", "UpdateRollups", "CriticalUpdates"]
+  #   - Empty/not set: [] or leave unset (will check all update categories)
+  #   Valid categories: SecurityUpdates, UpdateRollups, CriticalUpdates, DefinitionUpdates, FeaturePacks, ServicePacks, Tools, Updates
+  
+  tasks:
+    - name: Get formatted date and time
+      set_fact:
+        patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        patch_time: "{{ ansible_date_time.time }}"
+    
+    - name: Check if IIS is installed
+      win_shell: |
+        $feature = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+        if ($feature) {
+            Write-Output "INSTALLED:$($feature.Installed)"
+        } else {
+            Write-Output "INSTALLED:False"
+        }
+      register: iis_check
+      ignore_errors: yes
+    
+    - name: Fail if IIS is not installed
+      fail:
+        msg: "IIS (Web-Server) is not installed on this host"
+      when: "'True' not in iis_check.stdout"
+    
+    - name: Get IIS version before patching
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+        if (-not $version) {
+            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+        }
+        if (-not $version) {
+            $version = "Unknown"
+        }
+        Write-Output $version
+      register: iis_version_before
+      ignore_errors: yes
+    
+    - name: Get Windows version and build
+      win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        Write-Output "OS:$($os.Caption) Build:$($os.BuildNumber)"
+      register: windows_info
+    
+    - name: Check current WSUS configuration
+      win_shell: |
+        $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+        $auPath = "$regPath\AU"
+        
+        if (Test-Path $regPath) {
+            $wsusServer = (Get-ItemProperty -Path $regPath -Name WUServer -ErrorAction SilentlyContinue).WUServer
+            $wsusStatusServer = (Get-ItemProperty -Path $regPath -Name WUStatusServer -ErrorAction SilentlyContinue).WUStatusServer
+            $useWUServer = (Get-ItemProperty -Path $auPath -Name UseWUServer -ErrorAction SilentlyContinue).UseWUServer
+            
+            Write-Output "WSUS_SERVER:$wsusServer"
+            Write-Output "WSUS_STATUS_SERVER:$wsusStatusServer"
+            Write-Output "USE_WSUS:$useWUServer"
+        } else {
+            Write-Output "WSUS_NOT_CONFIGURED"
+        }
+      register: wsus_config_check
+      ignore_errors: yes
+    
+    - name: Configure WSUS server settings (if wsus_server is provided)
+      win_shell: |
+        $wsusServer = "{{ wsus_server | default('') }}"
+        
+        if ([string]::IsNullOrEmpty($wsusServer)) {
+            Write-Output "SKIPPED:No WSUS server specified"
+            exit 0
+        }
+        
+        $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+        $auPath = "$regPath\AU"
+        
+        # Create registry paths if they don't exist
+        if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force | Out-Null
+        }
+        if (-not (Test-Path $auPath)) {
+            New-Item -Path $auPath -Force | Out-Null
+        }
+        
+        # Set WSUS server
+        Set-ItemProperty -Path $regPath -Name WUServer -Value $wsusServer -Type String
+        Set-ItemProperty -Path $regPath -Name WUStatusServer -Value $wsusServer -Type String
+        
+        # Enable use of WSUS server
+        Set-ItemProperty -Path $auPath -Name UseWUServer -Value 1 -Type DWord
+        
+        # Configure automatic update options (4 = Auto download and schedule install)
+        Set-ItemProperty -Path $auPath -Name AUOptions -Value 4 -Type DWord
+        
+        Write-Output "CONFIGURED:WSUS server set to $wsusServer"
+        
+        # Restart Windows Update service to apply changes
+        Restart-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        
+        Write-Output "SERVICE_RESTARTED:Windows Update service restarted"
+      register: wsus_config
+      when: wsus_server is defined and wsus_server != ''
+      ignore_errors: yes
+    
+    - name: Display patching information
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS WSUS Patching Information"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - "Windows: {{ windows_info.stdout }}"
+          - "IIS Version (Before): {{ iis_version_before.stdout | default('Unknown') }}"
+          - "WSUS Server: {{ wsus_server | default('Default Windows Update') }}"
+          - "WSUS Config: {{ wsus_config_check.stdout_lines | default([]) }}"
+          - "Install Updates: {{ install_updates | default(false) }}"
+          - "Reboot If Needed: {{ reboot_if_needed | default(false) }}"
+          - "Update Categories: {{ 'All categories' if (update_categories is not defined or update_categories | length == 0) else update_categories }}"
+          - "=========================================="
+    
+    - name: Check Windows Update service status
+      win_shell: |
+        $service = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
+        if ($service) {
+            Write-Output "STATUS:$($service.Status)"
+            if ($service.Status -ne 'Running') {
+                Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+                $service = Get-Service -Name wuauserv
+                Write-Output "STATUS_AFTER:$($service.Status)"
+            }
+        } else {
+            Write-Output "STATUS:NotFound"
+        }
+      register: wuauserv_status
+      ignore_errors: yes
+    
+    - name: Search for available updates from WSUS
+      win_updates:
+        category_names: "{{ update_categories | default(omit) }}"
+        state: searched
+        log_path: C:\ansible_wsus_updates.log
+      register: available_updates
+      ignore_errors: yes
+    
+    - name: Display available updates
+      debug:
+        msg:
+          - "=========================================="
+          - "Available Windows Updates from WSUS"
+          - "Total Updates Found: {{ available_updates.found_update_count | default(0) }}"
+          - "=========================================="
+    
+    - name: Display update details
+      debug:
+        msg: 
+          - "Title: {{ item.title }}"
+          - "KB: {{ item.kb | default('N/A') }}"
+          - "ID: {{ item.id }}"
+          - "Categories: {{ item.categories | default([]) | join(', ') }}"
+      loop: "{{ available_updates.updates | default([]) }}"
+      when: available_updates.found_update_count | default(0) > 0
+    
+    - name: Install Windows updates from WSUS
+      win_updates:
+        category_names: "{{ update_categories | default(omit) }}"
+        state: installed
+        log_path: C:\ansible_wsus_updates.log
+        reboot: no
+      register: install_result
+      when: 
+        - install_updates | default(false) | bool
+        - available_updates.found_update_count | default(0) > 0
+      ignore_errors: yes
+    
+    - name: Check if reboot is required
+      win_shell: |
+        $rebootRequired = $false
+        
+        # Check Component Based Servicing
+        if (Test-Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") {
+            $rebootRequired = $true
+        }
+        
+        # Check Windows Update
+        if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") {
+            $rebootRequired = $true
+        }
+        
+        # Check PendingFileRenameOperations
+        $pendingFileRename = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
+        if ($pendingFileRename) {
+            $rebootRequired = $true
+        }
+        
+        if ($rebootRequired) {
+            Write-Output "REQUIRED:Yes"
+        } else {
+            Write-Output "REQUIRED:No"
+        }
+      register: reboot_check
+      when: install_updates | default(false) | bool
+      ignore_errors: yes
+    
+    - name: Reboot server if needed
+      win_reboot:
+        reboot_timeout: 3600
+        pre_reboot_delay: 60
+        post_reboot_delay: 120
+        test_command: whoami
+      when:
+        - install_updates | default(false) | bool
+        - reboot_if_needed | default(false) | bool
+        - "'Yes' in (reboot_check.stdout | default(''))"
+    
+    - name: Get IIS version after patching
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+        if (-not $version) {
+            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+        }
+        if (-not $version) {
+            $version = "Unknown"
+        }
+        Write-Output $version
+      register: iis_version_after
+      ignore_errors: yes
+      when: install_updates | default(false) | bool
+    
+    - name: Verify IIS is running after updates
+      win_shell: |
+        $service = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+        if ($service) {
+            if ($service.Status -eq 'Running') {
+                Write-Output "STATUS:Running"
+            } else {
+                Write-Output "STATUS:$($service.Status)"
+                Start-Service -Name W3SVC -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+                $service = Get-Service -Name W3SVC
+                Write-Output "STATUS_AFTER:$($service.Status)"
+            }
+        } else {
+            Write-Output "STATUS:NotFound"
+        }
+      register: iis_service_check
+      when: install_updates | default(false) | bool
+      ignore_errors: yes
+    
+    - name: Display installed updates
+      debug:
+        msg: 
+          - "Title: {{ item.title }}"
+          - "KB: {{ item.kb | default('N/A') }}"
+          - "ID: {{ item.id }}"
+      loop: "{{ install_result.updates | default([]) }}"
+      when: 
+        - install_updates | default(false) | bool
+        - install_result.updates is defined
+        - install_result.updates | length > 0
+    
+    - name: Display patching summary
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS WSUS Patching Summary"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - "WSUS Server: {{ wsus_server | default('Default Windows Update') }}"
+          - "IIS Version (Before): {{ iis_version_before.stdout | default('Unknown') }}"
+          - "IIS Version (After): {{ iis_version_after.stdout | default('Unknown') if install_updates | default(false) else 'N/A (updates not installed)' }}"
+          - "Available Updates: {{ available_updates.found_update_count | default(0) }}"
+          - "Updates Installed: {{ install_result.installed_update_count | default(0) if install_updates | default(false) else 0 }}"
+          - "Reboot Required: {{ 'Yes' if ('Yes' in (reboot_check.stdout | default(''))) else 'No' if install_updates | default(false) else 'N/A' }}"
+          - "IIS Service Status: {{ iis_service_check.stdout | default('N/A') }}"
+          - "=========================================="
+
