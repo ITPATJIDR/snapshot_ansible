@@ -165,7 +165,6 @@
         state: searched
         log_path: C:\ansible_wsus_updates.log
       register: available_updates
-      ignore_errors: yes
     
     - name: Display available updates
       debug:
