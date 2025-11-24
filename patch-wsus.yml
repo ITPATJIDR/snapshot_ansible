@@ -81,9 +81,13 @@
       register: wsus_config_check
       ignore_errors: yes
     
+    - name: Set WSUS server variable
+      set_fact:
+        wsus_server_url: "{{ wsus_server | default('') }}"
+    
     - name: Configure WSUS server settings (if wsus_server is provided)
       win_shell: |
-        $wsusServer = "{{ wsus_server | default('') }}"
+        $wsusServer = "{{ wsus_server_url }}"
         
         if ([string]::IsNullOrEmpty($wsusServer)) {
             Write-Output "SKIPPED:No WSUS server specified"
@@ -119,7 +123,7 @@
         
         Write-Output "SERVICE_RESTARTED:Windows Update service restarted"
       register: wsus_config
-      when: wsus_server is defined and wsus_server != ''
+      when: wsus_server_url is defined and wsus_server_url != ''
       ignore_errors: yes
     
     - name: Display patching information
