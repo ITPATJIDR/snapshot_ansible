@@ -87,7 +87,7 @@
     
     - name: Configure WSUS server settings (if wsus_server is provided)
       win_shell: |
-        $wsusServer = "{{ wsus_server_url }}"
+        $wsusServer = "http://your-wsus-server.domain.com:8530"
         
         if ([string]::IsNullOrEmpty($wsusServer)) {
             Write-Output "SKIPPED:No WSUS server specified"
