@@ -1,0 +1,104 @@
+---
+- name: Manage IIS Service on Windows Server
+  hosts: all
+  gather_facts: yes
+  # service_action: "start", "stop", "restart", "status" (required)
+  # Example:
+  #   - service_action: "start"
+  #   - service_action: "stop"
+  #   - service_action: "restart"
+  #   - service_action: "status"
+
+  tasks:
+    - name: Validate service_action parameter
+      fail:
+        msg: "service_action must be set to 'start', 'stop', 'restart', or 'status'"
+      when: service_action is not defined or service_action not in ['start', 'stop', 'restart', 'status']
+    
+    - name: Check if IIS is installed (W3SVC service exists)
+      win_service:
+        name: W3SVC
+      register: iis_check
+      ignore_errors: yes
+    
+    - name: Set IIS installation status
+      set_fact:
+        iis_installed: "{{ iis_check is succeeded }}"
+    
+    - name: Fail if IIS is not installed
+      fail:
+        msg: "IIS (W3SVC service) is not installed on this host"
+      when: not iis_installed
+    
+    - name: Get IIS service status before action
+      win_service:
+        name: W3SVC
+      register: iis_status_before
+      when: iis_installed
+    
+    - name: Start IIS service
+      win_service:
+        name: W3SVC
+        state: started
+      when: 
+        - iis_installed
+        - service_action == "start"
+      register: iis_start_result
+      ignore_errors: yes
+    
+    - name: Stop IIS service
+      win_service:
+        name: W3SVC
+        state: stopped
+      when: 
+        - iis_installed
+        - service_action == "stop"
+      register: iis_stop_result
+      ignore_errors: yes
+    
+    - name: Restart IIS service
+      win_service:
+        name: W3SVC
+        state: restarted
+      when: 
+        - iis_installed
+        - service_action == "restart"
+      register: iis_restart_result
+      ignore_errors: yes
+    
+    - name: Get IIS service status after action
+      win_service:
+        name: W3SVC
+      register: iis_status_after
+      when: 
+        - iis_installed
+        - service_action != "status"
+    
+    - name: Get detailed IIS service information
+      win_shell: |
+        Get-Service W3SVC | Select-Object Name, DisplayName, Status, StartType | Format-List
+        Write-Output "`nIIS Application Pools:"
+        Get-IISAppPool | Select-Object Name, Status | Format-Table -AutoSize
+      register: iis_detailed_status
+      ignore_errors: yes
+      when: iis_installed
+    
+    - name: Display service management result
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS Service Management"
+          - "Host: {{ inventory_hostname }}"
+          - "Action: {{ service_action | upper }}"
+          - "Status Before: {{ iis_status_before.state | default('Unknown') }}"
+          - "Status After: {{ iis_status_after.state | default(iis_status_before.state) | default('Unknown') }}"
+          - "Result: {{ 'Success' if (iis_start_result is succeeded or iis_stop_result is succeeded or iis_restart_result is succeeded or service_action == 'status') else 'Failed' }}"
+          - "=========================================="
+      when: iis_installed
+    
+    - name: Display detailed status (status action only)
+      debug:
+        msg: "{{ iis_detailed_status.stdout_lines }}"
+      when: 
+        - iis_installed
+        - service_action == "status"
