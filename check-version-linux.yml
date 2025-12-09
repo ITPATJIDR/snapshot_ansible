@@ -1,0 +1,26 @@
+---
+- name: Check Nginx Version on Linux Hosts
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: Check if nginx is installed
+      command: which nginx
+      register: nginx_path
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Fail if nginx is not installed
+      fail:
+        msg: "Nginx is not installed on this host"
+      when: nginx_path.rc != 0
+
+    - name: Get nginx version
+      command: nginx -v
+      register: nginx_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display nginx version
+      debug:
+        msg: "{{ nginx_version.stderr | default(nginx_version.stdout) }}"
