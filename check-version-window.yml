@@ -1,0 +1,55 @@
+---
+- name: Check IIS and Windows Version on Windows Hosts
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: Check if IIS is installed
+      win_shell: |
+        $feature = Get-WindowsFeature -Name Web-Server -ErrorAction SilentlyContinue
+        if ($feature) {
+            Write-Output "INSTALLED:$($feature.Installed)"
+        } else {
+            Write-Output "INSTALLED:False"
+        }
+      register: iis_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Fail if IIS is not installed
+      fail:
+        msg: "IIS (Web-Server) is not installed on this host"
+      when: "'True' not in iis_check.stdout"
+
+    - name: Get IIS version
+      win_shell: |
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+        if (-not $version) {
+            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+        }
+        if (-not $version) {
+            $version = "Unknown"
+        }
+        Write-Output $version
+      register: iis_version
+      ignore_errors: yes
+      changed_when: false
+      failed_when: false
+
+    - name: Get Windows version and build
+      win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        Write-Output "OS:$($os.Caption) Build:$($os.BuildNumber)"
+      register: windows_info
+      changed_when: false
+
+    - name: Display IIS and Windows version
+      debug:
+        msg:
+          - "=========================================="
+          - "IIS and Windows Version Information"
+          - "Host: {{ inventory_hostname }}"
+          - "Windows: {{ windows_info.stdout }}"
+          - "IIS Version: {{ iis_version.stdout | default('Unknown') }}"
+          - "=========================================="
