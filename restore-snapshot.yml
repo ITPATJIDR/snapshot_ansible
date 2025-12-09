@@ -272,7 +272,7 @@
                     
                     if ($vm.State -eq 'Running') {
                         Write-Output "INFO: Stopping VM '$vmName'..."
-                        Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
+                        $null = Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop
                         Start-Sleep -Seconds 2
                         $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
                         if ($null -eq $vm) {
@@ -296,7 +296,7 @@
             # Restore the last snapshot
             try {
                 Write-Output "INFO: Restoring snapshot '$snapshotName'..."
-                Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
+                $null = Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop
                 Write-Output "INFO: Snapshot restored successfully"
             } catch {
                 Write-Output "ERROR: Failed to restore snapshot '$snapshotName' for VM '$vmName': $($_.Exception.Message)"
@@ -307,7 +307,7 @@
             if ($startVm) {
                 try {
                     Write-Output "INFO: Starting VM '$vmName'..."
-                    Start-VM -Name $vmName -ErrorAction Stop | Out-Null
+                    $null = Start-VM -Name $vmName -ErrorAction Stop
                     Start-Sleep -Seconds 3
                     $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
                     if ($null -eq $vm) {
