@@ -23,8 +23,19 @@
   #   - Examples:
   #     - use_nginx_official_repo: true
   #     - use_nginx_official_repo: false
+  #
+  # test_fail can be set in AWX as an extra variable
+  #   - true: Force fail for testing error handling (default: false)
+  #   - false: Normal execution
+  #   Example:
+  #     - test_fail: true
 
   tasks:
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
+    
     - name: Get formatted date and time
       set_fact:
         patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"

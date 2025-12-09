@@ -1,0 +1,341 @@
+---
+- name: Patch .NET by Installing .NET SDK 10.0.100
+  hosts: all
+  gather_facts: yes
+  # installer_path can be set in AWX as an extra variable
+  # Examples:
+  #   - installer_path: "C:\Installers\dotnet-sdk-10.0.100-win-x64.exe"
+  #   - installer_path: "\\server\share\dotnet-sdk-10.0.100-win-x64.exe"
+  #   - If not set, will search in common locations
+  #
+  # services_to_stop can be set in AWX as an extra variable or survey
+  # Examples:
+  #   - String from survey: services_to_stop: "W3SVC,MyService" or services_to_stop: "W3SVC"
+  #   - List: services_to_stop: ["W3SVC", "MyService"]
+  #   - Empty/not set: services_to_stop: [] or leave unset (will stop common .NET services)
+
+  tasks:
+    - name: Get formatted date and time
+      set_fact:
+        patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        patch_time: "{{ ansible_date_time.time }}"
+    
+    - name: Set installer path
+      set_fact:
+        dotnet10_installer: "{{ installer_path | default('dotnet-sdk-10.0.100-win-x64.exe') }}"
+    
+    - name: Normalize services_to_stop to a list (handle string from AWX survey)
+      set_fact:
+        services_to_stop_normalized: >-
+          {%- if services_to_stop is not defined or services_to_stop == '' -%}
+            ["W3SVC"]
+          {%- elif services_to_stop is string -%}
+            {%- if ',' in services_to_stop -%}
+              {{ services_to_stop.split(',') | map('trim') | list | select('length') | list }}
+            {%- else -%}
+              {{ [services_to_stop | trim] }}
+            {%- endif -%}
+          {%- elif services_to_stop is iterable and services_to_stop is not string -%}
+            {{ services_to_stop | list }}
+          {%- else -%}
+            ["W3SVC"]
+          {%- endif -%}
+    
+    - name: Get .NET version before patching
+      win_shell: |
+        $result = @{}
+        
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $version = & dotnet --version 2>&1
+                $result.DefaultVersion = $version
+                
+                $sdks = & dotnet --list-sdks 2>&1
+                $result.InstalledSDKs = $sdks -join "`n"
+                
+                $runtimes = & dotnet --list-runtimes 2>&1
+                $result.InstalledRuntimes = $runtimes -join "`n"
+            } else {
+                $result.DefaultVersion = "Not Installed"
+            }
+        } catch {
+            $result.DefaultVersion = "Error: $_"
+        }
+        
+        $result | ConvertTo-Json -Compress
+      register: dotnet_version_before
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Parse .NET version before
+      set_fact:
+        dotnet_before: "{{ dotnet_version_before.stdout | from_json }}"
+      when: 
+        - dotnet_version_before.stdout is defined
+        - dotnet_version_before.stdout != ''
+        - dotnet_version_before.stdout != '{}'
+      ignore_errors: yes
+    
+    - name: Display patching information
+      debug:
+        msg:
+          - "=========================================="
+          - ".NET Patching Information"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - ".NET Version (Before): {{ dotnet_before.DefaultVersion | default('Unknown') }}"
+          - "Services to Stop: {{ services_to_stop_normalized | join(', ') }}"
+          - "Installer: {{ dotnet10_installer }}"
+          - "=========================================="
+    
+    # Stop services before patching
+    - name: Stop services before patching
+      win_service:
+        name: "{{ item }}"
+        state: stopped
+      loop: "{{ services_to_stop_normalized }}"
+      register: services_stopped
+      ignore_errors: yes
+    
+    - name: Display services stop status
+      debug:
+        msg: "Service {{ item.item }}: {{ 'Stopped' if item is succeeded else 'Failed to stop' }}"
+      loop: "{{ services_stopped.results | default([]) }}"
+      when: services_stopped.results is defined
+    
+    - name: Find .NET 10 installer file
+      win_shell: |
+        $installer = "{{ dotnet10_installer }}"
+        $searchPaths = @(
+            "C:\",
+            "C:\Installers",
+            "C:\Temp",
+            "C:\Downloads",
+            "$env:USERPROFILE\Downloads",
+            "$env:USERPROFILE\Desktop"
+        )
+        
+        $foundPath = $null
+        
+        # Check if path is absolute
+        if (Test-Path $installer) {
+            $foundPath = $installer
+        } else {
+            # Search in common locations
+            foreach ($path in $searchPaths) {
+                $fullPath = Join-Path $path $installer
+                if (Test-Path $fullPath) {
+                    $foundPath = $fullPath
+                    break
+                }
+            }
+        }
+        
+        if ($foundPath) {
+            Write-Output $foundPath
+        } else {
+            Write-Output "ERROR: Installer not found: $installer"
+            exit 1
+        }
+      register: dotnet10_installer_path
+      ignore_errors: yes
+    
+    - name: Fail if installer not found
+      fail:
+        msg: ".NET 10 installer not found. Please ensure dotnet-sdk-10.0.100-win-x64.exe is available on the target machine."
+      when: "'ERROR' in dotnet10_installer_path.stdout"
+    
+    - name: Install .NET SDK 10.0.100
+      win_shell: |
+        $installerPath = "{{ dotnet10_installer_path.stdout }}"
+        Write-Output "Installing .NET SDK 10.0.100 from: $installerPath"
+        
+        # Install silently
+        $process = Start-Process -FilePath $installerPath -ArgumentList "/quiet", "/norestart" -Wait -PassThru -NoNewWindow
+        
+        if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
+            Write-Output "SUCCESS: .NET SDK 10.0.100 installed (Exit Code: $($process.ExitCode))"
+        } else {
+            Write-Output "ERROR: Installation failed with exit code: $($process.ExitCode)"
+            exit 1
+        }
+      register: dotnet10_install
+      ignore_errors: yes
+    
+    - name: Wait for installation to complete
+      win_shell: Start-Sleep -Seconds 10
+      ignore_errors: yes
+    
+    - name: Verify .NET 10 installation
+      win_shell: |
+        # Refresh PATH
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        
+        Start-Sleep -Seconds 5
+        
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $version = & dotnet --version 2>&1
+                $sdks = & dotnet --list-sdks 2>&1
+                
+                Write-Output "INSTALLED:True"
+                Write-Output "VERSION:$version"
+                Write-Output "SDKS:$sdks"
+            } else {
+                Write-Output "INSTALLED:False"
+                exit 1
+            }
+        } catch {
+            Write-Output "INSTALLED:False"
+            Write-Output "ERROR:$_"
+            exit 1
+        }
+      register: dotnet10_verify
+      ignore_errors: yes
+    
+    - name: Fail if .NET 10 installation failed
+      fail:
+        msg: "Failed to install .NET SDK 10.0.100"
+      when: "'True' not in dotnet10_verify.stdout"
+    
+    # Start services after patching
+    - name: Start services after patching
+      win_service:
+        name: "{{ item }}"
+        state: started
+      loop: "{{ services_to_stop_normalized }}"
+      register: services_started
+      ignore_errors: yes
+    
+    - name: Display services start status
+      debug:
+        msg: "Service {{ item.item }}: {{ 'Started' if item is succeeded else 'Failed to start' }}"
+      loop: "{{ services_started.results | default([]) }}"
+      when: services_started.results is defined
+    
+    - name: Get .NET version after patching
+      win_shell: |
+        $result = @{}
+        
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $version = & dotnet --version 2>&1
+                $result.DefaultVersion = $version
+                
+                $sdks = & dotnet --list-sdks 2>&1
+                $result.InstalledSDKs = $sdks -join "`n"
+                
+                $runtimes = & dotnet --list-runtimes 2>&1
+                $result.InstalledRuntimes = $runtimes -join "`n"
+                
+                # Get detailed SDK information
+                $sdkDetails = @()
+                foreach ($line in ($sdks -split "`n")) {
+                    if ($line -match '(\d+\.\d+\.\d+)\s+\[(.+)\]') {
+                        $sdkDetails += [PSCustomObject]@{
+                            Version = $matches[1]
+                            Path = $matches[2]
+                        }
+                    }
+                }
+                $result.SDKDetails = ($sdkDetails | ConvertTo-Json -Compress)
+            } else {
+                $result.DefaultVersion = "Not Installed"
+            }
+        } catch {
+            $result.DefaultVersion = "Error: $_"
+        }
+        
+        $result | ConvertTo-Json -Compress
+      register: dotnet_version_after
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Parse .NET version after
+      set_fact:
+        dotnet_after: "{{ dotnet_version_after.stdout | from_json }}"
+      when: 
+        - dotnet_version_after.stdout is defined
+        - dotnet_version_after.stdout != ''
+        - dotnet_version_after.stdout != '{}'
+      ignore_errors: yes
+    
+    - name: Check .NET version details
+      win_shell: |
+        $result = @{}
+        
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                # Get default version
+                $version = & dotnet --version 2>&1
+                $result.DefaultVersion = $version
+                
+                # Get all SDKs
+                $sdks = & dotnet --list-sdks 2>&1
+                $result.AllSDKs = $sdks
+                
+                # Get all runtimes
+                $runtimes = & dotnet --list-runtimes 2>&1
+                $result.AllRuntimes = $runtimes
+                
+                # Get info command output
+                $info = & dotnet --info 2>&1
+                $result.Info = $info -join "`n"
+            } else {
+                $result.Error = "dotnet command not found"
+            }
+        } catch {
+            $result.Error = $_.Exception.Message
+        }
+        
+        $result | ConvertTo-Json -Compress
+      register: dotnet_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Parse .NET check result
+      set_fact:
+        dotnet_check_result: "{{ dotnet_check.stdout | from_json }}"
+      when: 
+        - dotnet_check.stdout is defined
+        - dotnet_check.stdout != ''
+        - dotnet_check.stdout != '{}'
+      ignore_errors: yes
+    
+    - name: Display patching summary
+      debug:
+        msg:
+          - "=========================================="
+          - ".NET Patching Summary"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "Host: {{ inventory_hostname }}"
+          - ".NET Version (Before): {{ dotnet_before.DefaultVersion | default('Unknown') }}"
+          - ".NET Version (After): {{ dotnet_after.DefaultVersion | default('Unknown') }}"
+          - "Installation Status: {{ 'Success' if ('True' in dotnet10_verify.stdout) else 'Failed' }}"
+          - "=========================================="
+    
+    - name: Display installed .NET SDKs
+      debug:
+        msg:
+          - "Installed .NET SDKs:"
+          - "{{ dotnet_after.InstalledSDKs | default('N/A') }}"
+      when: dotnet_after is defined
+    
+    - name: Display installed .NET Runtimes
+      debug:
+        msg:
+          - "Installed .NET Runtimes:"
+          - "{{ dotnet_after.InstalledRuntimes | default('N/A') }}"
+      when: dotnet_after is defined
+    
+    - name: Display detailed .NET information
+      debug:
+        msg: "{{ dotnet_check_result.Info | default('N/A') }}"
+      when: dotnet_check_result is defined and dotnet_check_result.Info is defined
+

@@ -1,0 +1,353 @@
+---
+- name: Backup .NET and Install .NET SDK 9.0.308
+  hosts: all
+  gather_facts: yes
+  # installer_path can be set in AWX as an extra variable
+  # Examples:
+  #   - installer_path: "C:\Installers\dotnet-sdk-9.0.308-win-x64.exe"
+  #   - installer_path: "\\server\share\dotnet-sdk-9.0.308-win-x64.exe"
+  #   - If not set, will search in common locations
+  #
+  # backup_path can be set in AWX as an extra variable
+  # Examples:
+  #   - backup_path: "C:\DotNet_Backups"
+  #   - If not set, defaults to: C:\DotNet_Backups
+
+  tasks:
+    - name: Get formatted date and time
+      set_fact:
+        backup_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        backup_time: "{{ ansible_date_time.time }}"
+        backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+    
+    - name: Set backup path
+      set_fact:
+        backup_base_path: "{{ backup_path | default('C:\\DotNet_Backups') }}"
+    
+    - name: Set backup folder with timestamp
+      set_fact:
+        backup_folder: "{{ backup_base_path }}\\DotNet_Backup_{{ backup_timestamp }}"
+    
+    - name: Set installer path
+      set_fact:
+        dotnet9_installer: "{{ installer_path | default('dotnet-sdk-9.0.308-win-x64.exe') }}"
+    
+    - name: Check installed .NET SDK versions
+      win_shell: |
+        $installedVersions = @()
+        
+        # Check .NET SDK versions using dotnet --list-sdks
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $sdkList = & dotnet --list-sdks 2>&1
+                if ($sdkList) {
+                    foreach ($line in $sdkList) {
+                        if ($line -match '(\d+\.\d+\.\d+)') {
+                            $installedVersions += $matches[1]
+                        }
+                    }
+                }
+            }
+        } catch {}
+        
+        # Check .NET Runtime versions
+        try {
+            if ($dotnetPath) {
+                $runtimeList = & dotnet --list-runtimes 2>&1
+                if ($runtimeList) {
+                    $runtimes = @()
+                    foreach ($line in $runtimeList) {
+                        if ($line -match 'Microsoft\.(?:AspNetCore|NETCore)\.App\s+(\d+\.\d+\.\d+)') {
+                            $runtimes += $matches[1]
+                        }
+                    }
+                    $installedVersions += $runtimes | Sort-Object -Unique
+                }
+            }
+        } catch {}
+        
+        # Check registry for .NET Framework versions
+        try {
+            $netFrameworkPath = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP"
+            if (Test-Path $netFrameworkPath) {
+                $versions = Get-ChildItem -Path $netFrameworkPath -Recurse | Get-ItemProperty -Name version -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -eq "Full" } | Select-Object -ExpandProperty version
+                if ($versions) {
+                    $installedVersions += $versions
+                }
+            }
+        } catch {}
+        
+        if ($installedVersions.Count -eq 0) {
+            Write-Output "[]"
+        } else {
+            ($installedVersions | Sort-Object -Unique) | ConvertTo-Json
+        }
+      register: installed_dotnet_versions
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Parse installed .NET versions
+      set_fact:
+        dotnet_versions_list: "{{ (installed_dotnet_versions.stdout | from_json) if (installed_dotnet_versions.stdout is defined and installed_dotnet_versions.stdout != '' and installed_dotnet_versions.stdout != '[]') else [] }}"
+    
+    - name: Display installed .NET versions
+      debug:
+        msg:
+          - "=========================================="
+          - "Installed .NET Versions (Before)"
+          - "Versions: {{ dotnet_versions_list | join(', ') if dotnet_versions_list | length > 0 else 'No .NET versions found' }}"
+          - "=========================================="
+    
+    - name: Create backup directory
+      win_file:
+        path: "{{ backup_folder }}"
+        state: directory
+    
+    - name: Backup installed .NET information
+      win_shell: |
+        $backupPath = "{{ backup_folder }}\dotnet_info_before.txt"
+        $info = "========================================`r`n"
+        $info += ".NET Backup Information`r`n"
+        $info += "Date: {{ backup_date }}`r`n"
+        $info += "Time: {{ backup_time }}`r`n"
+        $info += "Host: {{ inventory_hostname }}`r`n"
+        $info += "========================================`r`n`r`n"
+        
+        # Get .NET SDK versions
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $info += "Installed .NET SDKs:`r`n"
+                $sdkList = & dotnet --list-sdks 2>&1
+                $info += $sdkList -join "`r`n"
+                $info += "`r`n`r`n"
+                
+                $info += "Installed .NET Runtimes:`r`n"
+                $runtimeList = & dotnet --list-runtimes 2>&1
+                $info += $runtimeList -join "`r`n"
+                $info += "`r`n`r`n"
+            }
+        } catch {}
+        
+        # Get .NET Framework versions from registry
+        try {
+            $netFrameworkPath = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP"
+            if (Test-Path $netFrameworkPath) {
+                $info += ".NET Framework Versions (Registry):`r`n"
+                Get-ChildItem -Path $netFrameworkPath -Recurse | Get-ItemProperty -Name version -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -eq "Full" } | ForEach-Object {
+                    $info += "  $($_.PSPath.Split('\')[-2]): $($_.version)`r`n"
+                }
+            }
+        } catch {}
+        
+        $info | Out-File -FilePath $backupPath -Encoding UTF8
+        Write-Output "SUCCESS: .NET information backed up"
+      register: dotnet_info_backup
+      ignore_errors: yes
+    
+    # Remove existing .NET installations
+    - name: Uninstall existing .NET SDK and Runtime
+      win_shell: |
+        $uninstalled = @()
+        
+        # Get list of installed .NET SDK packages
+        try {
+            $packages = Get-Package -ProviderName Programs -Name "*Microsoft .NET*" -ErrorAction SilentlyContinue
+            foreach ($package in $packages) {
+                try {
+                    Write-Output "Uninstalling: $($package.Name) - $($package.Version)"
+                    Uninstall-Package -InputObject $package -Force -ErrorAction SilentlyContinue
+                    $uninstalled += "$($package.Name) - $($package.Version)"
+                } catch {
+                    Write-Output "WARNING: Failed to uninstall $($package.Name): $_"
+                }
+            }
+        } catch {}
+        
+        # Try using wmic to uninstall
+        try {
+            $products = Get-WmiObject -Class Win32_Product | Where-Object { 
+                $_.Name -like "*Microsoft .NET*" -or 
+                $_.Name -like "*dotnet*" 
+            }
+            foreach ($product in $products) {
+                try {
+                    Write-Output "Uninstalling via WMI: $($product.Name)"
+                    $product.Uninstall()
+                    $uninstalled += $product.Name
+                } catch {
+                    Write-Output "WARNING: Failed to uninstall $($product.Name): $_"
+                }
+            }
+        } catch {}
+        
+        if ($uninstalled.Count -gt 0) {
+            Write-Output "SUCCESS: Uninstalled $($uninstalled.Count) .NET packages"
+            $uninstalled | ConvertTo-Json
+        } else {
+            Write-Output "INFO: No .NET packages found to uninstall"
+            Write-Output "[]"
+        }
+      register: dotnet_uninstall
+      ignore_errors: yes
+    
+    - name: Wait for uninstall to complete
+      win_shell: Start-Sleep -Seconds 10
+      ignore_errors: yes
+    
+    - name: Find .NET 9 installer file
+      win_shell: |
+        $installer = "{{ dotnet9_installer }}"
+        $searchPaths = @(
+            "C:\",
+            "C:\Installers",
+            "C:\Temp",
+            "C:\Downloads",
+            "$env:USERPROFILE\Downloads",
+            "$env:USERPROFILE\Desktop"
+        )
+        
+        $foundPath = $null
+        
+        # Check if path is absolute
+        if (Test-Path $installer) {
+            $foundPath = $installer
+        } else {
+            # Search in common locations
+            foreach ($path in $searchPaths) {
+                $fullPath = Join-Path $path $installer
+                if (Test-Path $fullPath) {
+                    $foundPath = $fullPath
+                    break
+                }
+            }
+        }
+        
+        if ($foundPath) {
+            Write-Output $foundPath
+        } else {
+            Write-Output "ERROR: Installer not found: $installer"
+            exit 1
+        }
+      register: dotnet9_installer_path
+      ignore_errors: yes
+    
+    - name: Fail if installer not found
+      fail:
+        msg: ".NET 9 installer not found. Please ensure dotnet-sdk-9.0.308-win-x64.exe is available on the target machine."
+      when: "'ERROR' in dotnet9_installer_path.stdout"
+    
+    - name: Install .NET SDK 9.0.308
+      win_shell: |
+        $installerPath = "{{ dotnet9_installer_path.stdout }}"
+        Write-Output "Installing .NET SDK 9.0.308 from: $installerPath"
+        
+        # Install silently
+        $process = Start-Process -FilePath $installerPath -ArgumentList "/quiet", "/norestart" -Wait -PassThru -NoNewWindow
+        
+        if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
+            Write-Output "SUCCESS: .NET SDK 9.0.308 installed (Exit Code: $($process.ExitCode))"
+        } else {
+            Write-Output "ERROR: Installation failed with exit code: $($process.ExitCode)"
+            exit 1
+        }
+      register: dotnet9_install
+      ignore_errors: yes
+    
+    - name: Verify .NET 9 installation
+      win_shell: |
+        Start-Sleep -Seconds 5
+        
+        # Refresh PATH
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $version = & dotnet --version 2>&1
+                $sdks = & dotnet --list-sdks 2>&1
+                
+                Write-Output "INSTALLED:True"
+                Write-Output "VERSION:$version"
+                Write-Output "SDKS:$sdks"
+            } else {
+                Write-Output "INSTALLED:False"
+                exit 1
+            }
+        } catch {
+            Write-Output "INSTALLED:False"
+            Write-Output "ERROR:$_"
+            exit 1
+        }
+      register: dotnet9_verify
+      ignore_errors: yes
+    
+    - name: Fail if .NET 9 installation failed
+      fail:
+        msg: "Failed to install .NET SDK 9.0.308"
+      when: "'True' not in dotnet9_verify.stdout"
+    
+    - name: Get installed .NET versions after installation
+      win_shell: |
+        $installedVersions = @()
+        
+        try {
+            $dotnetPath = Get-Command dotnet -ErrorAction SilentlyContinue
+            if ($dotnetPath) {
+                $sdkList = & dotnet --list-sdks 2>&1
+                if ($sdkList) {
+                    foreach ($line in $sdkList) {
+                        if ($line -match '(\d+\.\d+\.\d+)') {
+                            $installedVersions += $matches[1]
+                        }
+                    }
+                }
+            }
+        } catch {}
+        
+        if ($installedVersions.Count -eq 0) {
+            Write-Output "[]"
+        } else {
+            ($installedVersions | Sort-Object -Unique) | ConvertTo-Json
+        }
+      register: dotnet_versions_after
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Create backup summary
+      win_shell: |
+        $summaryPath = "{{ backup_folder }}\backup_summary.txt"
+        $summary = ".NET Backup and Installation Summary`r`n"
+        $summary += "========================================`r`n"
+        $summary += "Date: {{ backup_date }}`r`n"
+        $summary += "Time: {{ backup_time }}`r`n"
+        $summary += "Host: {{ inventory_hostname }}`r`n"
+        $summary += "`r`n"
+        $summary += "Backup Location: {{ backup_folder }}`r`n"
+        $summary += "`r`n"
+        $summary += ".NET Versions (Before): {{ dotnet_versions_list | join(', ') if dotnet_versions_list | length > 0 else 'None' }}`r`n"
+        
+        $versionsAfter = {{ (dotnet_versions_after.stdout | from_json) if (dotnet_versions_after.stdout is defined and dotnet_versions_after.stdout != '' and dotnet_versions_after.stdout != '[]') else [] }}
+        $summary += ".NET Versions (After): {{ (versionsAfter | join(', ')) if versionsAfter | length > 0 else 'None' }}`r`n"
+        $summary += "`r`n"
+        $summary += "Installed: .NET SDK 9.0.308`r`n"
+        $summary += "Installation Status: {{ 'Success' if ('True' in dotnet9_verify.stdout) else 'Failed' }}`r`n"
+        
+        $summary | Out-File -FilePath $summaryPath -Encoding UTF8
+        Write-Output "SUCCESS: Backup summary created"
+      register: summary_result
+      ignore_errors: yes
+      failed_when: false
+    
+    - name: Display backup and installation summary
+      debug:
+        msg:
+          - "=========================================="
+          - ".NET Backup and Installation Completed"
+          - "Backup Location: {{ backup_folder }}"
+          - ".NET Versions (Before): {{ dotnet_versions_list | join(', ') if dotnet_versions_list | length > 0 else 'None' }}"
+          - ".NET Versions (After): {{ (dotnet_versions_after.stdout | from_json | join(', ')) if (dotnet_versions_after.stdout is defined and dotnet_versions_after.stdout != '' and dotnet_versions_after.stdout != '[]') else 'None' }}"
+          - "Installation Status: {{ 'Success' if ('True' in dotnet9_verify.stdout) else 'Failed' }}"
+          - "=========================================="
+
