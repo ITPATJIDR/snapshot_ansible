@@ -23,11 +23,37 @@
 
     - name: Get IIS version
       win_shell: |
-        Import-Module WebAdministration -ErrorAction SilentlyContinue
-        $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+        $version = $null
+        # Try to get version from registry (most reliable method)
+        try {
+            $regVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\InetStp" -ErrorAction SilentlyContinue).VersionString
+            if ($regVersion) {
+                $version = $regVersion
+            }
+        } catch {}
+        
+        # Fallback: Try WebAdministration module
         if (-not $version) {
-            $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+            try {
+                Import-Module WebAdministration -ErrorAction SilentlyContinue
+                $version = (Get-ItemProperty "IIS:\Sites\*" | Select-Object -First 1).PSVersion
+                if (-not $version) {
+                    $version = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.webServer/asp" -Name "enableParentPaths").PSVersion
+                }
+            } catch {}
         }
+        
+        # Fallback: Try registry MajorVersion and MinorVersion
+        if (-not $version) {
+            try {
+                $major = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\InetStp" -ErrorAction SilentlyContinue).MajorVersion
+                $minor = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\InetStp" -ErrorAction SilentlyContinue).MinorVersion
+                if ($major -and $minor) {
+                    $version = "$major.$minor"
+                }
+            } catch {}
+        }
+        
         if (-not $version) {
             $version = "Unknown"
         }
