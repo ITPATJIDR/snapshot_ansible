@@ -8,6 +8,10 @@
   #   - Empty/not set: vm_names: "" or leave unset (will restore last snapshot for all VMs)
   # stop_vm_if_running: true (default) - Stop VM before restore if it's running
   # start_vm_after_restore: true (default) - Start VM after restore completes
+  
+  vars:
+    # Explicitly set test_fail to false to prevent interference from global variables
+    test_fail: false
     
   tasks:
     - name: Set default vm_names if not defined
@@ -66,17 +70,35 @@
       
     - name: Set VM list from all VMs
       set_fact:
-        target_vms: "{{ all_vms.stdout | default('[]') | trim | from_json }}"
+        target_vms: "{{ (all_vms.stdout | default('[]') | trim | from_json) if (all_vms.stdout is defined and all_vms.stdout != '' and all_vms.stdout != '[]') else [] }}"
       when: vm_names_normalized | length == 0
+      ignore_errors: yes
+    
+    - name: Set default target_vms if empty
+      set_fact:
+        target_vms: []
+      when: 
+        - vm_names_normalized | length == 0
+        - target_vms is not defined or target_vms | length == 0
       
     - name: Set VM list from provided names
       set_fact:
         target_vms: "{{ vm_names_normalized }}"
       when: vm_names_normalized | length > 0
       
+    - name: Validate target_vms is set
+      set_fact:
+        target_vms: []
+      when: target_vms is not defined
+      
     - name: Display VMs to restore last snapshot
       debug:
-        msg: "Restoring last snapshot for VMs: {{ target_vms }}"
+        msg: "Restoring last snapshot for VMs: {{ target_vms | default([]) }}"
+    
+    - name: Fail if no VMs found
+      fail:
+        msg: "No VMs found to restore snapshots. Please check VM names or ensure Hyper-V has VMs available."
+      when: target_vms is not defined or target_vms | length == 0
         
     - name: List all snapshots for target VMs
       win_shell: |
@@ -105,10 +127,11 @@
         catch {
             Write-Output "VM: $vmName - ERROR: $($_.Exception.Message)"
         }
-      loop: "{{ target_vms }}"
+      loop: "{{ target_vms | default([]) }}"
       register: list_snapshots_results
       changed_when: false
       failed_when: false
+      when: target_vms is defined and target_vms | length > 0
       
     - name: Display all snapshots
       debug:
@@ -139,10 +162,11 @@
         catch {
             Write-Output "VM: $vmName - ERROR: $($_.Exception.Message)"
         }
-      loop: "{{ target_vms }}"
+      loop: "{{ target_vms | default([]) }}"
       register: last_snapshot_info
       changed_when: false
       failed_when: false
+      when: target_vms is defined and target_vms | length > 0
       
     - name: Display last snapshots that will be restored
       debug:
@@ -278,8 +302,9 @@
             Write-Error "ERROR: Failed to restore snapshot for VM '$vmName': $errorMsg"
             exit 1
         }
-      loop: "{{ target_vms }}"
+      loop: "{{ target_vms | default([]) }}"
       register: restore_results
+      when: target_vms is defined and target_vms | length > 0
       ignore_errors: yes
       failed_when: 
         - restore_results.rc is defined
