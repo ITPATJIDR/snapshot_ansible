@@ -180,11 +180,9 @@
         $ProgressPreference = 'SilentlyContinue'
         $ErrorActionPreference = 'Continue'
         $WarningPreference = 'SilentlyContinue'
-        $InformationPreference = 'SilentlyContinue'
-        $VerbosePreference = 'SilentlyContinue'
         $vmName = "{{ item | replace('"', '`"') }}"
         
-        # Ensure we always have output to prevent empty JSON parsing
+        # Ensure we always have output
         Write-Output "Starting restore process for VM: $vmName"
         
         try {
@@ -200,10 +198,10 @@
         }
         
         try {
-            # Get VM - don't use Out-Null here, we need the VM object
+            # Get VM
             $vm = $null
             try {
-                $vm = Get-VM -Name $vmName -ErrorAction Stop
+                $vm = Get-VM -Name $vmName -ErrorAction Stop 
             } catch {
                 Write-Output "ERROR: VM '$vmName' not found: $($_.Exception.Message)"
                 exit 1
@@ -250,7 +248,7 @@
                     $vm = Get-VM -Name $vmName -ErrorAction Stop
                     if ($vm.State -eq 'Running') {
                         Write-Output "INFO: Stopping VM '$vmName'..."
-                        $null = Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop
+                        Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
                         Start-Sleep -Seconds 2
                         $vm = Get-VM -Name $vmName -ErrorAction Stop
                         if ($vm.State -eq 'Off') {
@@ -271,7 +269,7 @@
             # Restore the last snapshot
             try {
                 Write-Output "INFO: Restoring snapshot '$snapshotName'..."
-                $null = Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop
+                Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
                 Write-Output "INFO: Snapshot restored successfully"
             } catch {
                 Write-Output "ERROR: Failed to restore snapshot '$snapshotName' for VM '$vmName': $($_.Exception.Message)"
@@ -282,7 +280,7 @@
             if ($startVm) {
                 try {
                     Write-Output "INFO: Starting VM '$vmName'..."
-                    $null = Start-VM -Name $vmName -ErrorAction Stop
+                    Start-VM -Name $vmName -ErrorAction Stop | Out-Null
                     Start-Sleep -Seconds 3
                     $vm = Get-VM -Name $vmName -ErrorAction Stop
                     if ($vm.State -eq 'Running') {
@@ -298,8 +296,6 @@
             
             Write-Output "SUCCESS: Restored last snapshot '$snapshotName' (created: $creationTime) for VM '$vmName'"
             Write-Output "COMPLETED: Restore operation finished for VM '$vmName'"
-            # Ensure output is not empty
-            Write-Output "END_OF_RESTORE"
             exit 0
         }
         catch {
@@ -308,8 +304,6 @@
                 $errorMsg = "Unknown error occurred"
             }
             Write-Output "ERROR: Failed to restore snapshot for VM '$vmName': $errorMsg"
-            # Ensure output is not empty even on error
-            Write-Output "END_OF_RESTORE_ERROR"
             exit 1
         }
       loop: "{{ target_vms | default([]) }}"
