@@ -173,6 +173,7 @@
     - name: Restore last snapshot for each VM
       win_shell: |
         $ProgressPreference = 'SilentlyContinue'
+        $ErrorActionPreference = 'Continue'
         $WarningPreference = 'SilentlyContinue'
         $vmName = "{{ item | replace('"', '`"') }}"
         
@@ -193,40 +194,17 @@
         }
         
         try {
-            # Get VM - try multiple times with retry logic
+            # Get VM
             $vm = $null
-            $maxRetries = 3
-            $retryCount = 0
-            
-            while ($null -eq $vm -and $retryCount -lt $maxRetries) {
-                try {
-                    $vm = Get-VM -Name $vmName -ErrorAction Stop
-                } catch {
-                    $retryCount++
-                    if ($retryCount -lt $maxRetries) {
-                        Write-Output "WARNING: VM not found on attempt $retryCount, retrying in 2 seconds..."
-                        Start-Sleep -Seconds 2
-                        $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-                    } else {
-                        # Last attempt with SilentlyContinue
-                        $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-                    }
-                }
+            try {
+                $vm = Get-VM -Name $vmName -ErrorAction Stop
+            } catch {
+                Write-Output "ERROR: VM '$vmName' not found: $($_.Exception.Message)"
+                exit 1
             }
             
             if ($null -eq $vm) {
-                Write-Output "ERROR: VM '$vmName' not found after $maxRetries attempts. Please verify the VM name exists."
-                # Try to list available VMs for debugging
-                try {
-                    $availableVMs = Get-VM | Select-Object -ExpandProperty Name
-                    if ($availableVMs) {
-                        Write-Output "Available VMs: $($availableVMs -join ', ')"
-                    } else {
-                        Write-Output "No VMs found on this host"
-                    }
-                } catch {
-                    Write-Output "Could not list available VMs: $($_.Exception.Message)"
-                }
+                Write-Output "ERROR: VM '$vmName' not found"
                 exit 1
             }
             
@@ -263,21 +241,12 @@
             $vmStopped = $false
             if ($stopVm) {
                 try {
-                    # Refresh VM object to get current state
-                    $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-                    if ($null -eq $vm) {
-                        Write-Output "ERROR: Cannot get VM '$vmName' state"
-                        exit 1
-                    }
-                    
+                    $vm = Get-VM -Name $vmName -ErrorAction Stop
                     if ($vm.State -eq 'Running') {
                         Write-Output "INFO: Stopping VM '$vmName'..."
                         Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
                         Start-Sleep -Seconds 2
-                        $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-                        if ($null -eq $vm) {
-                            Write-Output "WARNING: Cannot verify VM state after stop"
-                        }
+                        $vm = Get-VM -Name $vmName -ErrorAction Stop
                         if ($vm.State -eq 'Off') {
                             $vmStopped = $true
                             Write-Output "INFO: VM stopped successfully"
@@ -309,10 +278,7 @@
                     Write-Output "INFO: Starting VM '$vmName'..."
                     Start-VM -Name $vmName -ErrorAction Stop | Out-Null
                     Start-Sleep -Seconds 3
-                    $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-                    if ($null -eq $vm) {
-                        Write-Output "WARNING: Cannot verify VM state after start"
-                    }
+                    $vm = Get-VM -Name $vmName -ErrorAction Stop
                     if ($vm.State -eq 'Running') {
                         Write-Output "INFO: VM started successfully"
                     } else {
