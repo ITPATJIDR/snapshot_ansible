@@ -201,7 +201,7 @@
             # Get VM
             $vm = $null
             try {
-                $vm = Get-VM -Name $vmName -ErrorAction Stop
+                $vm = Get-VM -Name $vmName -ErrorAction Stop | Out-Null
             } catch {
                 Write-Output "ERROR: VM '$vmName' not found: $($_.Exception.Message)"
                 exit 1
