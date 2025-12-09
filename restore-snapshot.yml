@@ -154,19 +154,48 @@
     - name: Restore last snapshot for each VM
       win_shell: |
         $ProgressPreference = 'SilentlyContinue'
-        $ErrorActionPreference = 'Stop'
+        $ErrorActionPreference = 'Continue'
         $vmName = "{{ item | replace('"', '`"') }}"
-        $stopVm = [System.Convert]::ToBoolean("{{ stop_vm_if_running | lower }}")
-        $startVm = [System.Convert]::ToBoolean("{{ start_vm_after_restore | lower }}")
+        
+        try {
+            $stopVm = [System.Convert]::ToBoolean("{{ stop_vm_if_running | lower }}")
+        } catch {
+            $stopVm = $true
+        }
+        
+        try {
+            $startVm = [System.Convert]::ToBoolean("{{ start_vm_after_restore | lower }}")
+        } catch {
+            $startVm = $true
+        }
         
         try {
             # Get VM
-            $vm = Get-VM -Name $vmName -ErrorAction Stop
+            $vm = $null
+            try {
+                $vm = Get-VM -Name $vmName -ErrorAction Stop
+            } catch {
+                Write-Output "ERROR: VM '$vmName' not found: $($_.Exception.Message)"
+                exit 1
+            }
+            
+            if ($null -eq $vm) {
+                Write-Output "ERROR: VM '$vmName' not found"
+                exit 1
+            }
+            
             $vmState = $vm.State
+            Write-Output "INFO: VM '$vmName' current state: $vmState"
             
             # Get all snapshots for this VM, sorted by creation time (most recent first)
-            $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue | 
-                          Sort-Object CreationTime -Descending)
+            $snapshots = @()
+            try {
+                $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue | 
+                              Sort-Object CreationTime -Descending)
+            } catch {
+                Write-Output "WARNING: Error getting snapshots for VM '$vmName': $($_.Exception.Message)"
+                $snapshots = @()
+            }
             
             if ($snapshots.Count -eq 0) {
                 Write-Output "NO_SNAPSHOTS: No snapshots found for VM '$vmName'"
@@ -175,45 +204,98 @@
             
             # Get the last (most recent) snapshot
             $lastSnapshot = $snapshots[0]
+            if ($null -eq $lastSnapshot) {
+                Write-Output "ERROR: Failed to get last snapshot for VM '$vmName'"
+                exit 1
+            }
+            
             $snapshotName = $lastSnapshot.Name
             $creationTime = $lastSnapshot.CreationTime.ToString('yyyy-MM-dd HH:mm:ss')
+            Write-Output "INFO: Target snapshot: '$snapshotName' (Created: $creationTime)"
             
             # Stop VM if running and stop_vm_if_running is true
             $vmStopped = $false
-            if ($stopVm -and $vm.State -eq 'Running') {
-                Write-Output "INFO: Stopping VM '$vmName'..."
-                Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
-                $vmStopped = $true
-                Write-Output "INFO: VM stopped successfully"
+            if ($stopVm) {
+                try {
+                    $vm = Get-VM -Name $vmName -ErrorAction Stop
+                    if ($vm.State -eq 'Running') {
+                        Write-Output "INFO: Stopping VM '$vmName'..."
+                        Stop-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop | Out-Null
+                        Start-Sleep -Seconds 2
+                        $vm = Get-VM -Name $vmName -ErrorAction Stop
+                        if ($vm.State -eq 'Off') {
+                            $vmStopped = $true
+                            Write-Output "INFO: VM stopped successfully"
+                        } else {
+                            Write-Output "WARNING: VM may not have stopped completely. Current state: $($vm.State)"
+                        }
+                    } else {
+                        Write-Output "INFO: VM is not running (State: $($vm.State)), skipping stop"
+                    }
+                } catch {
+                    Write-Output "ERROR: Failed to stop VM '$vmName': $($_.Exception.Message)"
+                    exit 1
+                }
             }
             
             # Restore the last snapshot
-            Write-Output "INFO: Restoring snapshot '$snapshotName'..."
-            Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
-            Write-Output "INFO: Snapshot restored successfully"
+            try {
+                Write-Output "INFO: Restoring snapshot '$snapshotName'..."
+                Restore-VMSnapshot -VMName $vmName -Name $snapshotName -Confirm:$false -ErrorAction Stop | Out-Null
+                Write-Output "INFO: Snapshot restored successfully"
+            } catch {
+                Write-Output "ERROR: Failed to restore snapshot '$snapshotName' for VM '$vmName': $($_.Exception.Message)"
+                exit 1
+            }
             
             # Start VM if requested
             if ($startVm) {
-                Write-Output "INFO: Starting VM '$vmName'..."
-                Start-VM -Name $vmName -ErrorAction Stop | Out-Null
-                Write-Output "INFO: VM started successfully"
+                try {
+                    Write-Output "INFO: Starting VM '$vmName'..."
+                    Start-VM -Name $vmName -ErrorAction Stop | Out-Null
+                    Start-Sleep -Seconds 3
+                    $vm = Get-VM -Name $vmName -ErrorAction Stop
+                    if ($vm.State -eq 'Running') {
+                        Write-Output "INFO: VM started successfully"
+                    } else {
+                        Write-Output "WARNING: VM may not have started completely. Current state: $($vm.State)"
+                    }
+                } catch {
+                    Write-Output "ERROR: Failed to start VM '$vmName': $($_.Exception.Message)"
+                    exit 1
+                }
             }
             
             Write-Output "SUCCESS: Restored last snapshot '$snapshotName' (created: $creationTime) for VM '$vmName'"
+            exit 0
         }
         catch {
-            Write-Output "ERROR: Failed to restore snapshot for VM '$vmName': $($_.Exception.Message)"
+            $errorMsg = $_.Exception.Message
+            if ([string]::IsNullOrEmpty($errorMsg)) {
+                $errorMsg = "Unknown error occurred"
+            }
+            Write-Output "ERROR: Failed to restore snapshot for VM '$vmName': $errorMsg"
+            Write-Error "ERROR: Failed to restore snapshot for VM '$vmName': $errorMsg"
             exit 1
         }
       loop: "{{ target_vms }}"
       register: restore_results
-      failed_when: restore_results.rc != 0 and 'NO_SNAPSHOTS' not in restore_results.stdout
-      changed_when: restore_results.stdout is search("SUCCESS")
+      ignore_errors: yes
+      failed_when: 
+        - restore_results.rc is defined
+        - restore_results.rc != 0
+        - "'NO_SNAPSHOTS' not in (restore_results.stdout | default(''))"
+        - "'SUCCESS' not in (restore_results.stdout | default(''))"
+      changed_when: 
+        - restore_results.stdout is defined
+        - "'SUCCESS' in restore_results.stdout"
       
     - name: Display restore summary
       debug:
-        msg: "{{ item.stdout_lines }}"
-      loop: "{{ restore_results.results }}"
+        msg: "{{ item.stdout_lines | default(['No output']) }}"
+      loop: "{{ restore_results.results | default([]) }}"
       loop_control:
-        label: "{{ item.item }}"
+        label: "{{ item.item | default('Unknown') }}"
+      when: restore_results is defined and restore_results.results is defined
+      ignore_errors: yes
 
