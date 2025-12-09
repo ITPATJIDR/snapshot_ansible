@@ -13,6 +13,24 @@
         backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
         backup_folder: "{{ backup_path | default('/opt/nginx_backups') }}/nginx_backup_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
     
+    # Remove existing nginx
+    - name: Stop nginx service before removal
+      systemd:
+        name: nginx
+        state: stopped
+      ignore_errors: yes
+    
+    - name: Remove existing nginx
+      shell: |
+        PKG_MGR=$(command -v dnf || command -v yum)
+        $PKG_MGR remove -y nginx || true
+      ignore_errors: yes
+    
+    - name: Clean up nginx configuration files (optional)
+      shell: |
+        rm -rf /etc/nginx /etc/yum.repos.d/nginx.repo 2>/dev/null || true
+      ignore_errors: yes
+    
     - name: Check if nginx is installed
       shell: rpm -q nginx &> /dev/null && echo "true" || echo "false"
       register: nginx_check
