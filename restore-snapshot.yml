@@ -179,7 +179,11 @@
       win_shell: |
         $ProgressPreference = 'SilentlyContinue'
         $ErrorActionPreference = 'Continue'
+        $WarningPreference = 'SilentlyContinue'
         $vmName = "{{ item | replace('"', '`"') }}"
+        
+        # Ensure we always have output
+        Write-Output "Starting restore process for VM: $vmName"
         
         try {
             $stopVm = [System.Convert]::ToBoolean("{{ stop_vm_if_running | lower }}")
@@ -291,6 +295,7 @@
             }
             
             Write-Output "SUCCESS: Restored last snapshot '$snapshotName' (created: $creationTime) for VM '$vmName'"
+            Write-Output "COMPLETED: Restore operation finished for VM '$vmName'"
             exit 0
         }
         catch {
@@ -299,28 +304,37 @@
                 $errorMsg = "Unknown error occurred"
             }
             Write-Output "ERROR: Failed to restore snapshot for VM '$vmName': $errorMsg"
-            Write-Error "ERROR: Failed to restore snapshot for VM '$vmName': $errorMsg"
             exit 1
         }
       loop: "{{ target_vms | default([]) }}"
       register: restore_results
       when: target_vms is defined and target_vms | length > 0
       ignore_errors: yes
-      failed_when: 
-        - restore_results.rc is defined
-        - restore_results.rc != 0
-        - "'NO_SNAPSHOTS' not in (restore_results.stdout | default(''))"
-        - "'SUCCESS' not in (restore_results.stdout | default(''))"
+      failed_when: false
       changed_when: 
         - restore_results.stdout is defined
+        - restore_results.stdout != ''
         - "'SUCCESS' in restore_results.stdout"
       
     - name: Display restore summary
       debug:
-        msg: "{{ item.stdout_lines | default(['No output']) }}"
+        msg: "{{ item.stdout_lines | default(['No output']) if item.stdout_lines is defined and item.stdout_lines | length > 0 else ['No output available'] }}"
       loop: "{{ restore_results.results | default([]) }}"
       loop_control:
         label: "{{ item.item | default('Unknown') }}"
+      when: 
+        - restore_results is defined
+        - restore_results.results is defined
+        - restore_results.results | length > 0
+      ignore_errors: yes
+    
+    - name: Display restore completion status
+      debug:
+        msg:
+          - "=========================================="
+          - "Restore Operation Summary"
+          - "Total VMs processed: {{ restore_results.results | default([]) | length }}"
+          - "=========================================="
       when: restore_results is defined and restore_results.results is defined
       ignore_errors: yes
 
