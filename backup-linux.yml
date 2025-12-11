@@ -14,6 +14,8 @@
       set_fact:
         backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
         backup_folder: "{{ backup_path | default('/opt/nginx_backups') }}/nginx_backup_{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '-') }}"
+      tags: 
+        - backup-nginx
     
     # Remove existing nginx
     - name: Stop nginx service before removal
@@ -21,27 +23,37 @@
         name: nginx
         state: stopped
       ignore_errors: yes
+      tags: 
+        - backup-nginx
     
     - name: Remove existing nginx
       shell: |
         PKG_MGR=$(command -v dnf || command -v yum)
         $PKG_MGR remove -y nginx || true
       ignore_errors: yes
+      tags: 
+        - backup-nginx
     
     - name: Clean up nginx configuration files (optional)
       shell: |
         rm -rf /etc/nginx /etc/yum.repos.d/nginx.repo 2>/dev/null || true
       ignore_errors: yes
+      tags: 
+        - backup-nginx
     
     - name: Check if nginx is installed
       shell: rpm -q nginx &> /dev/null && echo "true" || echo "false"
       register: nginx_check
       changed_when: false
       ignore_errors: yes
+      tags: 
+        - backup-nginx
     
     - name: Set nginx installation status
       set_fact:
         nginx_installed: "{{ nginx_check.stdout | default('false') | bool }}"
+      tags: 
+        - backup-nginx
     
     # Install nginx if not present
     - block:
@@ -109,6 +121,8 @@
         when: not (nginx_installed | bool)
       
       when: not (nginx_installed | bool)
+      tags: 
+        - backup-nginx
     
     # Gather nginx information
     - name: Get nginx information
@@ -118,6 +132,8 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Get nginx service status
       shell: systemctl is-active nginx 2>/dev/null || echo "inactive"
@@ -125,6 +141,8 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Get nginx configuration directory
       shell: |
@@ -136,12 +154,16 @@
       register: nginx_config_dir
       changed_when: false
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Get nginx main configuration file
       shell: nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | head -1 || echo "/etc/nginx/nginx.conf"
       register: nginx_main_config
       changed_when: false
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     # Perform backup
     - name: Create backup directory
@@ -150,6 +172,8 @@
         state: directory
         mode: '0755'
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Backup nginx main configuration
       copy:
@@ -158,11 +182,15 @@
         remote_src: yes
         mode: '0644'
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Backup nginx configuration directory
       shell: |
         cp -r "{{ nginx_config_dir.stdout }}" "{{ backup_folder }}/etc_nginx"
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Backup nginx systemd service file
       shell: |
@@ -171,6 +199,8 @@
         done
       ignore_errors: yes
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Backup website content (if requested)
       shell: |
@@ -183,6 +213,8 @@
       when: 
         - nginx_installed
         - backup_content | default(false) | bool
+      tags: 
+        - backup-nginx
     
     - name: Create backup summary
       copy:
@@ -211,6 +243,8 @@
         dest: "{{ backup_folder }}/backup_summary.txt"
         mode: '0644'
       when: nginx_installed
+      tags: 
+        - backup-nginx
     
     - name: Stop nginx service after backup
       systemd:
@@ -219,6 +253,8 @@
       when: nginx_installed
       ignore_errors: yes
       register: nginx_stopped
+      tags: 
+        - backup-nginx
     
     - name: Display backup completion
       debug:
@@ -230,3 +266,5 @@
           - "Service Stopped: {{ 'Yes' if nginx_stopped is succeeded else 'Failed' }}"
           - "=========================================="
       when: nginx_installed
+      tags: 
+        - backup-nginx
