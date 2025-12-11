@@ -2,6 +2,8 @@
 - name: Check Nginx Version on Linux Hosts
   hosts: all
   gather_facts: yes
+  tags:
+    - check-version
 
   tasks:
     - name: Check if nginx is installed

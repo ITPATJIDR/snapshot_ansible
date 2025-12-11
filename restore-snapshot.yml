@@ -8,6 +8,8 @@
   #   - Empty/not set: vm_names: "" or leave unset (will restore last snapshot for all VMs)
   # stop_vm_if_running: true (default) - Stop VM before restore if it's running
   # start_vm_after_restore: true (default) - Start VM after restore completes
+  tags:
+    - restore-snapshot
   
   vars:
     # Explicitly set test_fail to false to prevent interference from global variables

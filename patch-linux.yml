@@ -29,6 +29,8 @@
   #   - false: Normal execution
   #   Example:
   #     - test_fail: true
+  tags:
+    - patch-linux
 
   tasks:
     - name: Force fail for testing

@@ -2,6 +2,8 @@
 - name: Send Email via SMTP
   hosts: localhost
   gather_facts: false
+  tags:
+    - send-email 
   
   vars:
     smtp_host: "smtp.gmail.com"

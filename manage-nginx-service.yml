@@ -8,6 +8,8 @@
   #   - service_action: "stop"
   #   - service_action: "restart"
   #   - service_action: "status"
+  tags:
+    - manage-nginx-service
 
   tasks:
     - name: Validate service_action parameter

@@ -7,6 +7,8 @@
   #   - String from survey: vm_names: "vm1,vm2" or vm_names: "vm1"
   #   - List: vm_names: ["vm1", "vm2"]
   #   - Empty/not set: vm_names: "" or leave unset (will delete last snapshot for all VMs)
+  tags:
+    - delete-snapshot
     
   tasks:
     - name: Set default vm_names if not defined
