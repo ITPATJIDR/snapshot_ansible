@@ -6,6 +6,8 @@
   # backup_content: true/false (default: false - backup website content)
   # nginx_version: "1.20.1" (optional - install specific version)
   # use_nginx_official_repo: true/false (default: false - use official repo)
+  tags: 
+    - backup-nginx
 
   tasks:
     - name: Set backup variables
