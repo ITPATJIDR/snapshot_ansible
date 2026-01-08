@@ -1,0 +1,85 @@
+{
+    "report_name": "Patch Result Report",
+    "generated_date": "23/12/2025",
+    "generated_time": "17:22:07",
+    "filters_applied": {
+        "server": "All servers",
+        "job": "All jobs",
+        "status": "All statuses"
+    },
+    "summary": {
+        "total_servers": 5,
+        "successful_patches": 3,
+        "failed_patches": 2,
+        "success_rate": "60.0%"
+    },
+    "results": [
+        {
+            "server": "web-server-01.example.com",
+            "job_name": "patch-linux",
+            "status": "success",
+            "patch_date": "23/12/2025",
+            "patch_time": "17:15:30",
+            "version_before": "nginx/1.18.0",
+            "version_after": "nginx/1.20.1",
+            "service_status": "active",
+            "updates_available": "Yes",
+            "updates_installed": "Yes",
+            "reboot_required": false
+        },
+        {
+            "server": "web-server-02.example.com",
+            "job_name": "patch-linux",
+            "status": "success",
+            "patch_date": "23/12/2025",
+            "patch_time": "17:16:45",
+            "version_before": "nginx/1.18.0",
+            "version_after": "nginx/1.20.1",
+            "service_status": "active",
+            "updates_available": "Yes",
+            "updates_installed": "Yes",
+            "reboot_required": false
+        },
+        {
+            "server": "app-server-01.example.com",
+            "job_name": "patch-linux",
+            "status": "failed",
+            "patch_date": "23/12/2025",
+            "patch_time": "17:17:20",
+            "version_before": "nginx/1.18.0",
+            "version_after": "nginx/1.18.0",
+            "service_status": "inactive",
+            "updates_available": "Yes",
+            "updates_installed": "No",
+            "reboot_required": false
+        },
+        {
+            "server": "win-server-01.example.com",
+            "job_name": "patch-wsus",
+            "status": "success",
+            "patch_date": "23/12/2025",
+            "patch_time": "17:18:00",
+            "wsus_server": "http://wsus.example.com:8530",
+            "services_checked": "IIS,SQL Server",
+            "services_status_before": "SERVICE:IIS|INSTALLED:True|VERSION:10.0|STATUS:Installed, SERVICE:SQL Server|INSTALLED:True|VERSION:MSSQLSERVER|STATUS:Installed",
+            "services_status_after": "SERVICE:IIS|STATUS:Running, SERVICE:SQL Server (MSSQLSERVER)|STATUS:Running",
+            "available_updates": 15,
+            "updates_installed": 15,
+            "reboot_required": "Yes"
+        },
+        {
+            "server": "win-server-02.example.com",
+            "job_name": "patch-wsus",
+            "status": "failed",
+            "patch_date": "23/12/2025",
+            "patch_time": "17:19:30",
+            "wsus_server": "http://wsus.example.com:8530",
+            "services_checked": "IIS",
+            "services_status_before": "SERVICE:IIS|INSTALLED:True|VERSION:10.0|STATUS:Installed",
+            "services_status_after": "N/A",
+            "available_updates": 10,
+            "updates_installed": 0,
+            "reboot_required": "N/A"
+        }
+    ]
+}

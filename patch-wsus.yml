@@ -401,4 +401,19 @@
           - "Updates Installed: {{ install_result.installed_update_count | default(0) if install_updates | default(false) else 0 }}"
           - "Reboot Required: {{ 'Yes' if ('Yes' in (reboot_check.stdout | default(''))) else 'No' if install_updates | default(false) else 'N/A' }}"
           - "=========================================="
-
+    
+    - name: Store patch result for reporting
+      set_fact:
+        patch_result:
+          server: "{{ inventory_hostname }}"
+          job_name: "patch-wsus"
+          status: "{{ 'success' if (install_result is succeeded or (not (install_updates | default(false) | bool))) else 'failed' }}"
+          patch_date: "{{ patch_date }}"
+          patch_time: "{{ patch_time }}"
+          wsus_server: "{{ wsus_server | default('Default Windows Update') }}"
+          services_checked: "{{ services_to_check | default('None - Patch all') }}"
+          services_status_before: "{{ services_check.stdout_lines | default(['N/A']) | join(', ') }}"
+          services_status_after: "{{ services_status_check.stdout_lines | default(['N/A']) | join(', ') }}"
+          available_updates: "{{ available_updates.found_update_count | default(0) }}"
+          updates_installed: "{{ install_result.installed_update_count | default(0) if install_updates | default(false) else 0 }}"
+          reboot_required: "{{ 'Yes' if ('Yes' in (reboot_check.stdout | default(''))) else 'No' if install_updates | default(false) else 'N/A' }}"

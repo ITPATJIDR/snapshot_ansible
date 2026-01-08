@@ -489,3 +489,19 @@
           - "Service Status: {{ nginx_service_status_before.stdout | default('Unknown') }}"
           - "=========================================="
       when: nginx_installed
+    
+    - name: Store patch result for reporting
+      set_fact:
+        patch_result:
+          server: "{{ inventory_hostname }}"
+          job_name: "patch-linux"
+          status: "{{ 'success' if (nginx_upgrade is succeeded or (not (install_updates | default(false) | bool))) else 'failed' }}"
+          patch_date: "{{ patch_date }}"
+          patch_time: "{{ patch_time }}"
+          version_before: "{{ nginx_version_before.stdout | default('Unknown') }}"
+          version_after: "{{ nginx_version_after.stdout | default(nginx_version_before.stdout | default('Unknown')) }}"
+          service_status: "{{ nginx_service_status_before.stdout | default('Unknown') }}"
+          updates_available: "{{ 'Yes' if updates_available else 'No' }}"
+          updates_installed: "{{ 'Yes' if (install_updates | default(false) and nginx_upgrade is succeeded) else 'No' }}"
+          reboot_required: false
+      when: nginx_installed

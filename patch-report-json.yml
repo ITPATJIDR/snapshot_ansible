@@ -1,0 +1,160 @@
+---
+- name: Generate Patch Report in JSON Format
+  hosts: localhost
+  gather_facts: yes
+  # filter_server can be set in AWX as an extra variable
+  #   - Filter results by server name (e.g., "server01.example.com")
+  #   - If not set, all servers will be included
+  #
+  # filter_job can be set in AWX as an extra variable
+  #   - Filter results by job name (e.g., "patch-linux", "patch-wsus")
+  #   - If not set, all jobs will be included
+  #
+  # filter_status can be set in AWX as an extra variable
+  #   - Filter results by status (e.g., "success", "failed")
+  #   - If not set, all statuses will be included
+  #
+  # report_dir can be set in AWX as an extra variable
+  #   - Custom directory for saving reports (default: ~/patch-report)
+  #   - Example: report_dir: "/var/log/patch-reports"
+  
+  vars:
+    report_directory: "{{ report_dir | default('~/patch-report') }}"
+    filter_server_name: "{{ filter_server | default('') }}"
+    filter_job_name: "{{ filter_job | default('') }}"
+    filter_status_value: "{{ filter_status | default('') }}"
+  
+  tasks:
+    - name: Get formatted date and time for report
+      set_fact:
+        report_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        report_time: "{{ ansible_date_time.time }}"
+        timestamp: "{{ ansible_date_time.date | replace('-', '') }}_{{ ansible_date_time.time | replace(':', '') }}"
+    
+    - name: Ensure patch-report directory exists
+      file:
+        path: "{{ report_directory }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+    
+    - name: Collect patch results from all hosts
+      set_fact:
+        all_patch_results: []
+    
+    - name: Build patch results list from hostvars
+      set_fact:
+        all_patch_results: "{{ all_patch_results + [item.value.patch_result | default({})] }}"
+      loop: "{{ hostvars | dict2items }}"
+      when: 
+        - item.value.patch_result is defined
+        - item.value.patch_result != {}
+      no_log: false
+    
+    - name: Apply server filter if specified
+      set_fact:
+        filtered_results: >-
+          {% set results = [] %}
+          {% for result in all_patch_results %}
+            {% if filter_server_name == '' or filter_server_name in result.server | default('') %}
+              {% set _ = results.append(result) %}
+            {% endif %}
+          {% endfor %}
+          {{ results }}
+      when: all_patch_results | length > 0
+    
+    - name: Apply job filter if specified
+      set_fact:
+        filtered_results: >-
+          {% set results = [] %}
+          {% for result in filtered_results | default(all_patch_results) %}
+            {% if filter_job_name == '' or filter_job_name in result.job_name | default('') %}
+              {% set _ = results.append(result) %}
+            {% endif %}
+          {% endfor %}
+          {{ results }}
+      when: all_patch_results | length > 0
+    
+    - name: Apply status filter if specified
+      set_fact:
+        filtered_results: >-
+          {% set results = [] %}
+          {% for result in filtered_results | default(all_patch_results) %}
+            {% if filter_status_value == '' or filter_status_value == result.status | default('') %}
+              {% set _ = results.append(result) %}
+            {% endif %}
+          {% endfor %}
+          {{ results }}
+      when: all_patch_results | length > 0
+    
+    - name: Set final results
+      set_fact:
+        final_results: "{{ filtered_results | default(all_patch_results) }}"
+    
+    - name: Calculate summary statistics
+      set_fact:
+        total_servers: "{{ final_results | length }}"
+        successful_patches: "{{ final_results | selectattr('status', 'equalto', 'success') | list | length }}"
+        failed_patches: "{{ final_results | selectattr('status', 'equalto', 'failed') | list | length }}"
+    
+    - name: Build JSON report structure
+      set_fact:
+        patch_report:
+          report_name: "Patch Result Report"
+          generated_date: "{{ report_date }}"
+          generated_time: "{{ report_time }}"
+          filters_applied:
+            server: "{{ filter_server_name if filter_server_name != '' else 'All servers' }}"
+            job: "{{ filter_job_name if filter_job_name != '' else 'All jobs' }}"
+            status: "{{ filter_status_value if filter_status_value != '' else 'All statuses' }}"
+          summary:
+            total_servers: "{{ total_servers | int }}"
+            successful_patches: "{{ successful_patches | int }}"
+            failed_patches: "{{ failed_patches | int }}"
+            success_rate: "{{ ((successful_patches | int / total_servers | int * 100) | round(2)) if total_servers | int > 0 else 0 }}%"
+          results: "{{ final_results }}"
+    
+    - name: Generate report filename
+      set_fact:
+        report_filename: "patch_report_{{ timestamp }}.json"
+        report_full_path: "{{ report_directory }}/patch_report_{{ timestamp }}.json"
+    
+    - name: Save patch report to JSON file
+      copy:
+        content: "{{ patch_report | to_nice_json }}"
+        dest: "{{ report_full_path }}"
+        mode: '0644'
+      delegate_to: localhost
+    
+    - name: Display report summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Patch Report Generated Successfully"
+          - "=========================================="
+          - "Report Name: {{ patch_report.report_name }}"
+          - "Generated: {{ report_date }} {{ report_time }}"
+          - "Report File: {{ report_full_path }}"
+          - ""
+          - "Filters Applied:"
+          - "  - Server: {{ patch_report.filters_applied.server }}"
+          - "  - Job: {{ patch_report.filters_applied.job }}"
+          - "  - Status: {{ patch_report.filters_applied.status }}"
+          - ""
+          - "Summary:"
+          - "  - Total Servers: {{ patch_report.summary.total_servers }}"
+          - "  - Successful Patches: {{ patch_report.summary.successful_patches }}"
+          - "  - Failed Patches: {{ patch_report.summary.failed_patches }}"
+          - "  - Success Rate: {{ patch_report.summary.success_rate }}"
+          - "=========================================="
+    
+    - name: Display individual results
+      debug:
+        msg:
+          - "Server: {{ item.server }}"
+          - "Job: {{ item.job_name }}"
+          - "Status: {{ item.status }}"
+          - "Date/Time: {{ item.patch_date }} {{ item.patch_time }}"
+          - "---"
+      loop: "{{ final_results }}"
+      when: final_results | length > 0
