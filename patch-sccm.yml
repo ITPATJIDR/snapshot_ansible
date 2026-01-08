@@ -3,11 +3,8 @@
   hosts: all
   gather_facts: no
   vars:
-    # Change 'SRS' to your actual Site Code if different
     sccm_site_code: "SRS"
-    # Specify the name of your ADR here
     adr_name: "test upgrade dotnet" 
-    # Timeout in seconds to wait for ADR completion (e.g., 1800 = 30 minutes)
     wait_timeout_seconds: 1800
 
   tasks:
@@ -15,48 +12,43 @@
       ansible.windows.win_shell: |
         $ErrorActionPreference = "Stop"
         
-        # Define Site Code and ADR Name from Ansible variables
+        # Variables from Ansible
         $SiteCode = "{{ sccm_site_code }}"
         $ADRName = "{{ adr_name }}"
+        $TimeoutSeconds = {{ wait_timeout_seconds | default(1800) }}
 
         # 1. Load Configuration Manager Module
-        # Try importing simply first
         if (-not (Get-Module -Name ConfigurationManager)) {
             try {
                 Import-Module ConfigurationManager -ErrorAction Stop
             }
             catch {
-                # If failed, try to locate via Registry (standard installation on Site Server)
-                $sccmSetupKey = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\SMS\Setup' -Name 'UI Installation Directory' -ErrorAction SilentlyContinue
+                # Try locating via Registry
+                $setupKeyPath = "HKLM:\SOFTWARE\Microsoft\SMS\Setup"
+                $valName = "UI Installation Directory"
+                $sccmSetupKey = Get-ItemProperty -Path $setupKeyPath -Name $valName -ErrorAction SilentlyContinue
+                
                 if ($sccmSetupKey) {
-                    $modulePath = Join-Path $sccmSetupKey.'UI Installation Directory' "bin\ConfigurationManager.psd1"
+                    # Access property with spaces safely
+                    $installDir = $sccmSetupKey."$valName"
+                    $modulePath = Join-Path $installDir "bin\ConfigurationManager.psd1"
+                    
                     if (Test-Path $modulePath) {
                         Import-Module $modulePath -ErrorAction Stop
                     } else {
-                        throw "ConfigurationManager module not found at calculated path: $modulePath"
+                        throw "ConfigurationManager module not found at: $modulePath"
                     }
                 } else {
-                    throw "Could not find SCCM Installation Directory in Registry and Import-Module failed."
+                    throw "Could not find SCCM Installation Directory in Registry."
                 }
             }
         }
 
         # 2. Set Location to Site Drive
-        if (-not (Get-PSDrive -Name $SiteCode -PSProvider CMSite -ErrorAction SilentlyContinue)) {
-             # If the drive doesn't exist (unlikely if module loaded correctly, but safe to check)
-             Write-Warning "Site drive $SiteCode not found, attempting to create..."
-             # Usually module import creates it, but if we need to manually create:
-             # New-PSDrive -Name $SiteCode -PSProvider CMSite -Root $null -Description "SCCM Site"
-             # However, assuming the module handles it or it's already there. 
-             # If Import-Module was successful, the provider should be available.
-        }
-        
-        # Verify provider exists
         if (-not (Get-PSProvider -PSProvider CMSite -ErrorAction SilentlyContinue)) {
             throw "CMSite Provider not found. Module might not be loaded correctly."
         }
-
-        # Switch to Site Code Drive
+        
         Set-Location "$($SiteCode):"
 
         # 3. Get Initial State
@@ -66,36 +58,31 @@
         }
         
         $InitialRunTime = $InitialADR.LastRunTime
-        write-output "Initial LastRunTime: $InitialRunTime"
+        Write-Output "Initial LastRunTime: $InitialRunTime"
 
         # 4. Invoke ADR
-        write-output "Invoking ADR: $ADRName"
+        Write-Output "Invoking ADR: $ADRName"
         Invoke-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
 
-        # 5. Wait for completion loop
-        $TimeoutSeconds = {{ wait_timeout_seconds }}
+        # 5. Wait for completion
         $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $Completed = $false
 
-        write-output "Waiting for ADR to update LastRunTime..."
+        Write-Output "Waiting for ADR to update LastRunTime..."
 
         while ($StopWatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
             Start-Sleep -Seconds 10
             
-            # Re-fetch the object to get updated properties. 
-            # IMPORTANT: Must re-get the object, properties on $InitialADR won't auto-update.
             $CurrentADR = Get-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
             
             if ($CurrentADR.LastRunTime -gt $InitialRunTime) {
-                write-output "ADR Finished successfully."
-                write-output "Old Time: $InitialRunTime"
-                write-output "New Time: $($CurrentADR.LastRunTime)"
-                write-output "Exit Code: $($CurrentADR.LastErrorCode)"
+                Write-Output "ADR Finished successfully."
+                Write-Output "Old Time: $InitialRunTime"
+                Write-Output "New Time: $($CurrentADR.LastRunTime)"
+                Write-Output "Exit Code: $($CurrentADR.LastErrorCode)"
                 $Completed = $true
                 break
             }
-            
-            # Optional: Print status periodically or just wait
         }
         
         $StopWatch.Stop()
