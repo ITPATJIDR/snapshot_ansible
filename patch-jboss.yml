@@ -1,0 +1,488 @@
+---
+- name: Patch JBoss EAP (ZIP or RPM)
+  hosts: all
+  gather_facts: yes
+  # patch_file_path can be set in AWX as an extra variable (for ZIP installation)
+  #   - Required for ZIP installation: Full path to patch file (e.g., "/tmp/jboss-eap-7.4.1-patch.zip")
+  #   - Not required for RPM installation
+  #
+  # override_conflicts can be set in AWX as an extra variable
+  #   - true: Use --override-all to force overwrite conflicting files
+  #   - false: Stop on conflicts (default: false)
+  #
+  # restart_after_patch can be set in AWX as an extra variable
+  #   - true: Restart JBoss service after patching (default: true)
+  #   - false: Do not restart (manual restart required)
+  #
+  # test_fail can be set in AWX as an extra variable
+  #   - true: Force fail for testing error handling (default: false)
+  #   - false: Normal execution
+  tags:
+    - patch-jboss
+
+  tasks:
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
+    
+    - name: Get formatted date and time
+      set_fact:
+        patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        patch_time: "{{ ansible_date_time.time }}"
+        patch_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time.replace(':', '-') }}"
+    
+    # ========================================
+    # Step 1: Detect JBoss Installation
+    # ========================================
+    
+    - name: Check if JBoss is installed from RPM
+      shell: rpm -qa | grep -i "eap7\|jboss"
+      register: jboss_rpm_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check common JBoss installation directories
+      stat:
+        path: "{{ item }}"
+      register: jboss_dir_check
+      loop:
+        - /opt/jboss
+        - /opt/jboss-eap
+        - /opt/jboss-eap-7.4
+        - /opt/jboss-eap-7.3
+        - /opt/jboss-eap-7.2
+        - /usr/share/jboss-eap
+        - /var/lib/jboss-eap
+      ignore_errors: yes
+    
+    - name: Find actual JBoss installation directory
+      set_fact:
+        jboss_home: "{{ item.stat.path }}"
+      when: item.stat.exists and item.stat.isdir
+      loop: "{{ jboss_dir_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Check for JBoss in custom JBOSS_HOME environment
+      shell: |
+        if [ -n "$JBOSS_HOME" ]; then
+          echo "$JBOSS_HOME"
+        elif [ -f /etc/profile.d/jboss.sh ]; then
+          source /etc/profile.d/jboss.sh && echo "$JBOSS_HOME"
+        else
+          echo ""
+        fi
+      register: jboss_env_home
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Set JBoss home from environment if found
+      set_fact:
+        jboss_home: "{{ jboss_env_home.stdout }}"
+      when: 
+        - jboss_env_home.stdout is defined
+        - jboss_env_home.stdout != ""
+        - jboss_home is not defined
+    
+    - name: Determine JBoss installation status
+      set_fact:
+        jboss_installed: "{{ (jboss_rpm_check.rc == 0) or (jboss_home is defined and jboss_home != '') }}"
+    
+    - name: Fail if JBoss is not installed
+      fail:
+        msg: "JBoss EAP is not installed on this host. Cannot perform patching."
+      when: not jboss_installed
+    
+    - name: Set installation method
+      set_fact:
+        jboss_install_method: "{{ 'rpm' if (jboss_rpm_check.rc == 0) else 'zip' }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 2: Get JBoss Configuration Details
+    # ========================================
+    
+    - name: Check JBoss mode (Standalone vs Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/configuration" ]; then
+          if [ -d "{{ jboss_home }}/domain/configuration" ]; then
+            echo "Both"
+          else
+            echo "Standalone"
+          fi
+        elif [ -d "{{ jboss_home }}/domain/configuration" ]; then
+          echo "Domain"
+        else
+          echo "Unknown"
+        fi
+      register: jboss_mode_check
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_home is defined
+    
+    - name: Set JBoss mode
+      set_fact:
+        jboss_mode: "{{ jboss_mode_check.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    - name: Get current JBoss version (from RPM)
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' $(rpm -qa | grep -i "eap7\|jboss" | head -1) 2>/dev/null || echo "Unknown"
+      register: jboss_version_rpm
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+    
+    - name: Get current JBoss version (from version.txt or product.conf)
+      shell: |
+        if [ -f "{{ jboss_home }}/version.txt" ]; then
+          cat "{{ jboss_home }}/version.txt" | head -1
+        elif [ -f "{{ jboss_home }}/bin/product.conf" ]; then
+          grep "slot=" "{{ jboss_home }}/bin/product.conf" | cut -d'=' -f2
+        else
+          echo "Unknown"
+        fi
+      register: jboss_version_zip
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_home is defined
+    
+    - name: Set JBoss version before patching
+      set_fact:
+        jboss_version_before: "{{ jboss_version_rpm.stdout if (jboss_install_method == 'rpm') else jboss_version_zip.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 3: Check JBoss Service Status
+    # ========================================
+    
+    - name: Check JBoss systemd service names
+      shell: |
+        systemctl list-units --type=service --all | grep -i jboss | awk '{print $1}' | head -1
+      register: jboss_service_name
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Get JBoss service status before patching
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_before
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Check if JBoss is running (process check)
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_process_check
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Set JBoss running status
+      set_fact:
+        jboss_running: "{{ (jboss_service_status_before.stdout | default('inactive') == 'active') or (jboss_process_check.stdout | default('0') | int > 0) }}"
+      when: jboss_installed
+    
+    - name: Display pre-patch information
+      debug:
+        msg:
+          - "=========================================="
+          - "JBoss Patch Information"
+          - "Host: {{ inventory_hostname }}"
+          - "Installation Method: {{ jboss_install_method | upper }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Current Version: {{ jboss_version_before | default('Unknown') }}"
+          - "Service Status: {{ jboss_service_status_before.stdout | default('Unknown') }}"
+          - "Patch Method: {{ 'Management CLI' if (jboss_install_method == 'zip') else 'YUM Update' }}"
+          - "=========================================="
+      when: jboss_installed
+    
+    # ========================================
+    # Step 4: Validate Prerequisites (ZIP Method)
+    # ========================================
+    
+    - name: Fail if patch file path not provided for ZIP installation
+      fail:
+        msg: "patch_file_path variable is required for ZIP installation. Please provide the path to the patch file."
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - patch_file_path is not defined or patch_file_path == ''
+    
+    - name: Check if patch file exists (ZIP method)
+      stat:
+        path: "{{ patch_file_path }}"
+      register: patch_file_stat
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+    
+    - name: Fail if patch file does not exist
+      fail:
+        msg: "Patch file not found: {{ patch_file_path }}"
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - not patch_file_stat.stat.exists
+    
+    - name: Check if JBoss CLI exists
+      stat:
+        path: "{{ jboss_home }}/bin/jboss-cli.sh"
+      register: cli_stat
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+    
+    - name: Fail if JBoss CLI not found
+      fail:
+        msg: "JBoss CLI not found at {{ jboss_home }}/bin/jboss-cli.sh"
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - not cli_stat.stat.exists
+    
+    # ========================================
+    # Step 5: Apply Patch - ZIP Method (Management CLI)
+    # ========================================
+    
+    - name: Apply patch using Management CLI (Standalone)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect << EOF
+        patch apply {{ patch_file_path }} {{ '--override-all' if (override_conflicts | default(false) | bool) else '' }}
+        shutdown --restart=true
+        EOF
+      register: patch_cli_standalone
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_mode == 'Standalone'
+        - jboss_running
+      ignore_errors: yes
+    
+    - name: Apply patch using Management CLI (Domain - requires manual host specification)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect << EOF
+        patch apply {{ patch_file_path }} {{ '--override-all' if (override_conflicts | default(false) | bool) else '' }} --host={{ domain_host | default('master') }}
+        shutdown --restart=true --host={{ domain_host | default('master') }}
+        EOF
+      register: patch_cli_domain
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_mode in ['Domain', 'Both']
+        - jboss_running
+      ignore_errors: yes
+    
+    - name: Apply patch offline (if JBoss not running)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh << EOF
+        patch apply {{ patch_file_path }} {{ '--override-all' if (override_conflicts | default(false) | bool) else '' }}
+        EOF
+      register: patch_cli_offline
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - not jboss_running
+      ignore_errors: yes
+    
+    - name: Wait after CLI patch application
+      wait_for:
+        timeout: 10
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - (patch_cli_standalone is succeeded) or (patch_cli_domain is succeeded) or (patch_cli_offline is succeeded)
+    
+    # ========================================
+    # Step 6: Apply Patch - RPM Method (YUM)
+    # ========================================
+    
+    - name: Update JBoss EAP packages via YUM
+      shell: |
+        yum update -y eap7-* jboss-*
+      register: yum_update_result
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+      ignore_errors: yes
+    
+    - name: Find .rpmnew configuration files
+      shell: |
+        find {{ jboss_home }} -name "*.rpmnew" 2>/dev/null || true
+      register: rpmnew_files
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+        - yum_update_result is succeeded
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Display .rpmnew files found
+      debug:
+        msg:
+          - "=========================================="
+          - "WARNING: .rpmnew files detected!"
+          - "These files contain new configuration from the patch."
+          - "You must manually merge these configurations:"
+          - "{{ rpmnew_files.stdout_lines | default([]) }}"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+        - rpmnew_files is defined
+        - rpmnew_files.stdout_lines | length > 0
+    
+    - name: Create backup of .rpmnew files
+      shell: |
+        backup_dir="/var/backups/jboss/rpmnew-{{ patch_timestamp }}"
+        mkdir -p "$backup_dir"
+        find {{ jboss_home }} -name "*.rpmnew" -exec cp --parents {} "$backup_dir" \; 2>/dev/null || true
+        echo "$backup_dir"
+      register: rpmnew_backup
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+        - rpmnew_files is defined
+        - rpmnew_files.stdout_lines | length > 0
+      ignore_errors: yes
+    
+    # ========================================
+    # Step 7: Verify Patch Application
+    # ========================================
+    
+    - name: Get JBoss version after patching (RPM)
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' $(rpm -qa | grep -i "eap7\|jboss" | head -1) 2>/dev/null || echo "Unknown"
+      register: jboss_version_after_rpm
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+    
+    - name: Get JBoss version after patching (ZIP)
+      shell: |
+        if [ -f "{{ jboss_home }}/version.txt" ]; then
+          cat "{{ jboss_home }}/version.txt" | head -1
+        elif [ -f "{{ jboss_home }}/bin/product.conf" ]; then
+          grep "slot=" "{{ jboss_home }}/bin/product.conf" | cut -d'=' -f2
+        else
+          echo "Unknown"
+        fi
+      register: jboss_version_after_zip
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+    
+    - name: Set JBoss version after patching
+      set_fact:
+        jboss_version_after: "{{ jboss_version_after_rpm.stdout if (jboss_install_method == 'rpm') else jboss_version_after_zip.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    - name: Check installed patches (ZIP method via CLI)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="patch info" 2>/dev/null || echo "Unable to query patch info"
+      register: patch_info_cli
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+      ignore_errors: yes
+      changed_when: false
+    
+    # ========================================
+    # Step 8: Restart JBoss Service
+    # ========================================
+    
+    - name: Restart JBoss service after patching
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: restarted
+      when: 
+        - jboss_installed
+        - restart_after_patch | default(true) | bool
+        - jboss_service_name.stdout is defined
+        - jboss_service_name.stdout != ""
+      ignore_errors: yes
+      register: jboss_restarted
+    
+    - name: Wait for JBoss to start after patch
+      wait_for:
+        timeout: 60
+      when: 
+        - jboss_installed
+        - jboss_restarted is defined
+        - jboss_restarted is succeeded
+    
+    - name: Get JBoss service status after restart
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_after
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    # ========================================
+    # Step 9: Display Patch Summary
+    # ========================================
+    
+    - name: Display patch summary
+      debug:
+        msg:
+          - "=========================================="
+          - "JBoss Patch Summary"
+          - "Host: {{ inventory_hostname }}"
+          - "Patch Date: {{ patch_date }}"
+          - "Patch Time: {{ patch_time }}"
+          - "Installation Method: {{ jboss_install_method | upper }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Version Before: {{ jboss_version_before | default('Unknown') }}"
+          - "Version After: {{ jboss_version_after | default('Unknown') }}"
+          - "Patch Applied: {{ 'Yes' if ((patch_cli_standalone is succeeded) or (patch_cli_domain is succeeded) or (patch_cli_offline is succeeded) or (yum_update_result is succeeded)) else 'Failed' }}"
+          - "Service Restarted: {{ 'Yes' if (jboss_restarted is succeeded) else 'No' }}"
+          - "Service Status: {{ jboss_service_status_after.stdout | default('Unknown') }}"
+          - "{{ '.rpmnew files: ' + (rpmnew_files.stdout_lines | length | string) if (jboss_install_method == 'rpm' and rpmnew_files is defined) else '' }}"
+          - "{{ '.rpmnew backup: ' + rpmnew_backup.stdout if (rpmnew_backup is defined and rpmnew_backup.stdout is defined) else '' }}"
+          - "=========================================="
+      when: jboss_installed
+    
+    # ========================================
+    # Step 10: Store Patch Result for Reporting
+    # ========================================
+    
+    - name: Store patch result for reporting
+      set_fact:
+        patch_result:
+          server: "{{ inventory_hostname }}"
+          job_name: "patch-jboss"
+          status: "{{ 'success' if ((patch_cli_standalone is succeeded) or (patch_cli_domain is succeeded) or (patch_cli_offline is succeeded) or (yum_update_result is succeeded)) else 'failed' }}"
+          patch_date: "{{ patch_date }}"
+          patch_time: "{{ patch_time }}"
+          install_method: "{{ jboss_install_method }}"
+          jboss_mode: "{{ jboss_mode | default('Unknown') }}"
+          version_before: "{{ jboss_version_before | default('Unknown') }}"
+          version_after: "{{ jboss_version_after | default('Unknown') }}"
+          service_status: "{{ jboss_service_status_after.stdout | default('Unknown') }}"
+          rpmnew_files_count: "{{ rpmnew_files.stdout_lines | length if (jboss_install_method == 'rpm' and rpmnew_files is defined) else 0 }}"
+          rpmnew_backup_path: "{{ rpmnew_backup.stdout | default('N/A') }}"
+      when: jboss_installed

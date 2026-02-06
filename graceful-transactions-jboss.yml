@@ -1,0 +1,547 @@
+---
+- name: Graceful Transaction Management for JBoss EAP
+  hosts: all
+  gather_facts: yes
+  # wait_transactions_timeout can be set in AWX as an extra variable
+  #   - Maximum time to wait for transactions to complete (default: 300 seconds)
+  #
+  # backup_tx_store can be set in AWX as an extra variable
+  #   - true: Backup tx-object-store before deletion (default: true)
+  #   - false: Delete without backup
+  #
+  # force_cleanup can be set in AWX as an extra variable
+  #   - true: Force cleanup even if transactions are pending
+  #   - false: Wait for transactions to complete (default: false)
+  #
+  # test_fail can be set in AWX as an extra variable
+  #   - true: Force fail for testing error handling (default: false)
+  #   - false: Normal execution
+  tags:
+    - graceful-transactions-jboss
+
+  tasks:
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
+    
+    - name: Get formatted date and time
+      set_fact:
+        cleanup_date: "{{ ansible_date_time.date }}"
+        cleanup_time: "{{ ansible_date_time.time }}"
+        cleanup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time.replace(':', '-') }}"
+    
+    # ========================================
+    # Step 1: Detect JBoss Installation
+    # ========================================
+    
+    - name: Check if JBoss is installed from RPM
+      shell: rpm -qa | grep -i "eap7\|jboss"
+      register: jboss_rpm_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check common JBoss installation directories
+      stat:
+        path: "{{ item }}"
+      register: jboss_dir_check
+      loop:
+        - /opt/jboss
+        - /opt/jboss-eap
+        - /opt/jboss-eap-7.4
+        - /opt/jboss-eap-7.3
+        - /opt/jboss-eap-7.2
+        - /usr/share/jboss-eap
+        - /var/lib/jboss-eap
+      ignore_errors: yes
+    
+    - name: Find actual JBoss installation directory
+      set_fact:
+        jboss_home: "{{ item.stat.path }}"
+      when: item.stat.exists and item.stat.isdir
+      loop: "{{ jboss_dir_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Check for JBoss in custom JBOSS_HOME environment
+      shell: |
+        if [ -n "$JBOSS_HOME" ]; then
+          echo "$JBOSS_HOME"
+        elif [ -f /etc/profile.d/jboss.sh ]; then
+          source /etc/profile.d/jboss.sh && echo "$JBOSS_HOME"
+        else
+          echo ""
+        fi
+      register: jboss_env_home
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Set JBoss home from environment if found
+      set_fact:
+        jboss_home: "{{ jboss_env_home.stdout }}"
+      when: 
+        - jboss_env_home.stdout is defined
+        - jboss_env_home.stdout != ""
+        - jboss_home is not defined
+    
+    - name: Determine JBoss installation status
+      set_fact:
+        jboss_installed: "{{ (jboss_rpm_check.rc == 0) or (jboss_home is defined and jboss_home != '') }}"
+    
+    - name: Fail if JBoss is not installed
+      fail:
+        msg: "JBoss EAP is not installed on this host. Cannot perform transaction cleanup."
+      when: not jboss_installed
+    
+    # ========================================
+    # Step 2: Get JBoss Configuration Details
+    # ========================================
+    
+    - name: Check JBoss mode (Standalone vs Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/configuration" ]; then
+          if [ -d "{{ jboss_home }}/domain/configuration" ]; then
+            echo "Both"
+          else
+            echo "Standalone"
+          fi
+        elif [ -d "{{ jboss_home }}/domain/configuration" ]; then
+          echo "Domain"
+        else
+          echo "Unknown"
+        fi
+      register: jboss_mode_check
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_home is defined
+    
+    - name: Set JBoss mode
+      set_fact:
+        jboss_mode: "{{ jboss_mode_check.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 3: Check JBoss Service Status
+    # ========================================
+    
+    - name: Check JBoss systemd service names
+      shell: |
+        systemctl list-units --type=service --all | grep -i jboss | awk '{print $1}' | head -1
+      register: jboss_service_name
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Get JBoss service status
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Check if JBoss is running (process check)
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_process_check
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Set JBoss running status
+      set_fact:
+        jboss_running: "{{ (jboss_service_status.stdout | default('inactive') == 'active') or (jboss_process_check.stdout | default('0') | int > 0) }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 4: Locate Transaction Store Directories
+    # ========================================
+    
+    - name: Find transaction store directories (Standalone)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/data/tx-object-store" ]; then
+          echo "{{ jboss_home }}/standalone/data/tx-object-store"
+        else
+          echo ""
+        fi
+      register: tx_store_standalone
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_mode in ['Standalone', 'Both']
+    
+    - name: Find transaction store directories (Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/domain/data/tx-object-store" ]; then
+          echo "{{ jboss_home }}/domain/data/tx-object-store"
+        else
+          echo ""
+        fi
+      register: tx_store_domain
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_mode in ['Domain', 'Both']
+    
+    - name: Create list of transaction store directories
+      set_fact:
+        tx_store_paths: >-
+          {{
+            ([tx_store_standalone.stdout] if (tx_store_standalone.stdout is defined and tx_store_standalone.stdout != '') else []) +
+            ([tx_store_domain.stdout] if (tx_store_domain.stdout is defined and tx_store_domain.stdout != '') else [])
+          }}
+      when: jboss_installed
+    
+    - name: Check if transaction stores exist
+      stat:
+        path: "{{ item }}"
+      register: tx_store_stat
+      loop: "{{ tx_store_paths | default([]) }}"
+      when: 
+        - jboss_installed
+        - tx_store_paths is defined
+        - tx_store_paths | length > 0
+    
+    # ========================================
+    # Step 5: Check Pending Transactions
+    # ========================================
+    
+    - name: Count pending transactions in each store
+      shell: |
+        if [ -d "{{ item.item }}" ]; then
+          find "{{ item.item }}" -type f | wc -l
+        else
+          echo "0"
+        fi
+      register: pending_tx_count
+      loop: "{{ tx_store_stat.results }}"
+      when: 
+        - jboss_installed
+        - tx_store_stat is defined
+        - item.stat.exists
+      ignore_errors: yes
+      changed_when: false
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Calculate total pending transactions
+      set_fact:
+        total_pending_tx: >-
+          {{
+            (pending_tx_count.results | default([]) | 
+             selectattr('stdout', 'defined') | 
+             map(attribute='stdout') | 
+             map('int') | 
+             sum) | default(0)
+          }}
+      when: 
+        - jboss_installed
+        - pending_tx_count is defined
+    
+    - name: Display transaction status
+      debug:
+        msg:
+          - "=========================================="
+          - "Transaction Status"
+          - "Host: {{ inventory_hostname }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "JBoss Running: {{ 'Yes' if jboss_running else 'No' }}"
+          - "Total Pending Transactions: {{ total_pending_tx | default(0) }}"
+          - "Transaction Stores: {{ tx_store_paths | default([]) | join(', ') }}"
+          - "=========================================="
+      when: jboss_installed
+    
+    # ========================================
+    # Step 6: Wait for Transactions to Complete (Graceful)
+    # ========================================
+    
+    - name: Wait for pending transactions to complete
+      shell: |
+        timeout={{ wait_transactions_timeout | default(300) }}
+        interval=5
+        elapsed=0
+        
+        while [ $elapsed -lt $timeout ]; do
+          total=0
+          {% for path in tx_store_paths | default([]) %}
+          if [ -d "{{ path }}" ]; then
+            count=$(find "{{ path }}" -type f 2>/dev/null | wc -l)
+            total=$((total + count))
+          fi
+          {% endfor %}
+          
+          if [ $total -eq 0 ]; then
+            echo "All transactions completed after ${elapsed} seconds"
+            exit 0
+          fi
+          
+          echo "Waiting... $total transactions pending (${elapsed}s elapsed)"
+          sleep $interval
+          elapsed=$((elapsed + interval))
+        done
+        
+        echo "Timeout reached. $total transactions still pending."
+        exit 1
+      register: wait_tx_result
+      when: 
+        - jboss_installed
+        - jboss_running
+        - total_pending_tx | default(0) | int > 0
+        - not (force_cleanup | default(false) | bool)
+      ignore_errors: yes
+    
+    - name: Display wait result
+      debug:
+        msg: "{{ wait_tx_result.stdout_lines | default(['No waiting required']) }}"
+      when: 
+        - jboss_installed
+        - wait_tx_result is defined
+    
+    # ========================================
+    # Step 7: Stop JBoss Service
+    # ========================================
+    
+    - name: Stop JBoss service for transaction cleanup
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: stopped
+      when: 
+        - jboss_installed
+        - jboss_running
+        - jboss_service_name.stdout is defined
+        - jboss_service_name.stdout != ""
+      ignore_errors: yes
+      register: jboss_stopped
+    
+    - name: Wait for JBoss to stop completely
+      wait_for:
+        timeout: 30
+      when: 
+        - jboss_installed
+        - jboss_stopped is defined
+        - jboss_stopped is succeeded
+    
+    - name: Verify JBoss has stopped
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_verify_stopped
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    # ========================================
+    # Step 8: Backup Transaction Store (Optional)
+    # ========================================
+    
+    - name: Create backup directory for transaction stores
+      file:
+        path: "/var/backups/jboss/tx-store-{{ cleanup_timestamp }}"
+        state: directory
+        mode: '0755'
+      when: 
+        - jboss_installed
+        - backup_tx_store | default(true) | bool
+        - tx_store_paths is defined
+        - tx_store_paths | length > 0
+    
+    - name: Backup transaction store directories
+      shell: |
+        if [ -d "{{ item }}" ]; then
+          store_name=$(echo "{{ item }}" | sed 's/\//-/g' | sed 's/^-//')
+          cp -r "{{ item }}" "/var/backups/jboss/tx-store-{{ cleanup_timestamp }}/${store_name}"
+          echo "Backed up {{ item }}"
+        fi
+      register: tx_backup_result
+      loop: "{{ tx_store_paths | default([]) }}"
+      when: 
+        - jboss_installed
+        - backup_tx_store | default(true) | bool
+      ignore_errors: yes
+    
+    - name: Get backup size
+      shell: |
+        du -sh "/var/backups/jboss/tx-store-{{ cleanup_timestamp }}" | awk '{print $1}'
+      register: tx_backup_size
+      when: 
+        - jboss_installed
+        - backup_tx_store | default(true) | bool
+      ignore_errors: yes
+      changed_when: false
+    
+    # ========================================
+    # Step 9: Clean Transaction Store Directories
+    # ========================================
+    
+    - name: Remove transaction store directories
+      shell: |
+        if [ -d "{{ item }}" ]; then
+          rm -rf "{{ item }}"
+          echo "Removed {{ item }}"
+        else
+          echo "Directory {{ item }} does not exist"
+        fi
+      register: tx_cleanup_result
+      loop: "{{ tx_store_paths | default([]) }}"
+      when: jboss_installed
+      ignore_errors: yes
+    
+    - name: Verify transaction stores are removed
+      stat:
+        path: "{{ item }}"
+      register: tx_verify_removal
+      loop: "{{ tx_store_paths | default([]) }}"
+      when: jboss_installed
+    
+    - name: Set cleanup success status
+      set_fact:
+        cleanup_success: >-
+          {{
+            tx_verify_removal.results | default([]) | 
+            selectattr('stat', 'defined') |
+            map(attribute='stat.exists') |
+            select('equalto', true) |
+            list |
+            length == 0
+          }}
+      when: jboss_installed
+    
+    # ========================================
+    # Step 10: Recreate Transaction Store Directories
+    # ========================================
+    
+    - name: Recreate clean transaction store directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ tx_store_paths | default([]) }}"
+      when: jboss_installed
+      ignore_errors: yes
+    
+    # ========================================
+    # Step 11: Restart JBoss Service
+    # ========================================
+    
+    - name: Start JBoss service after cleanup
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: started
+      when: 
+        - jboss_installed
+        - jboss_stopped is defined
+        - jboss_stopped is succeeded
+      ignore_errors: yes
+      register: jboss_restarted
+    
+    - name: Wait for JBoss to start
+      wait_for:
+        timeout: 60
+      when: 
+        - jboss_installed
+        - jboss_restarted is defined
+        - jboss_restarted is succeeded
+    
+    - name: Get JBoss service status after restart
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_after
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    # ========================================
+    # Step 12: Verify Clean State
+    # ========================================
+    
+    - name: Check transaction stores are clean
+      shell: |
+        if [ -d "{{ item }}" ]; then
+          find "{{ item }}" -type f | wc -l
+        else
+          echo "0"
+        fi
+      register: final_tx_count
+      loop: "{{ tx_store_paths | default([]) }}"
+      when: jboss_installed
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Calculate final transaction count
+      set_fact:
+        final_pending_tx: >-
+          {{
+            (final_tx_count.results | default([]) | 
+             selectattr('stdout', 'defined') | 
+             map(attribute='stdout') | 
+             map('int') | 
+             sum) | default(0)
+          }}
+      when: 
+        - jboss_installed
+        - final_tx_count is defined
+    
+    # ========================================
+    # Step 13: Display Cleanup Summary
+    # ========================================
+    
+    - name: Display cleanup summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Transaction Cleanup Summary"
+          - "Host: {{ inventory_hostname }}"
+          - "Cleanup Date: {{ cleanup_date }}"
+          - "Cleanup Time: {{ cleanup_time }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Transactions Before: {{ total_pending_tx | default(0) }}"
+          - "Transactions After: {{ final_pending_tx | default(0) }}"
+          - "Wait Result: {{ 'Completed' if (wait_tx_result is succeeded) else 'Timeout/Skipped' }}"
+          - "Backup Created: {{ 'Yes' if (backup_tx_store | default(true) | bool) else 'No' }}"
+          - "Backup Size: {{ tx_backup_size.stdout | default('N/A') }}"
+          - "Cleanup Success: {{ 'Yes' if cleanup_success else 'Failed' }}"
+          - "Service Stopped: {{ 'Yes' if (jboss_stopped is succeeded) else 'No' }}"
+          - "Service Restarted: {{ 'Yes' if (jboss_restarted is succeeded) else 'No' }}"
+          - "Service Status: {{ jboss_service_status_after.stdout | default('Unknown') }}"
+          - "Transaction Stores Cleaned:"
+          {% for path in tx_store_paths | default([]) %}
+          - "  - {{ path }}"
+          {% endfor %}
+          - "=========================================="
+      when: jboss_installed
+    
+    # ========================================
+    # Step 14: Store Result for Reporting
+    # ========================================
+    
+    - name: Store cleanup result for reporting
+      set_fact:
+        cleanup_result:
+          server: "{{ inventory_hostname }}"
+          job_name: "graceful-transactions-jboss"
+          status: "{{ 'success' if cleanup_success else 'failed' }}"
+          cleanup_date: "{{ cleanup_date }}"
+          cleanup_time: "{{ cleanup_time }}"
+          jboss_home: "{{ jboss_home | default('Not Found') }}"
+          jboss_mode: "{{ jboss_mode | default('Unknown') }}"
+          transactions_before: "{{ total_pending_tx | default(0) }}"
+          transactions_after: "{{ final_pending_tx | default(0) }}"
+          wait_completed: "{{ wait_tx_result is succeeded if wait_tx_result is defined else false }}"
+          backup_created: "{{ backup_tx_store | default(true) | bool }}"
+          backup_size: "{{ tx_backup_size.stdout | default('N/A') }}"
+          service_status: "{{ jboss_service_status_after.stdout | default('Unknown') }}"
+          tx_stores_cleaned: "{{ tx_store_paths | default([]) }}"
+      when: jboss_installed

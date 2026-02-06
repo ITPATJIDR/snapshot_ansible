@@ -1,0 +1,217 @@
+---
+- name: Patch JBoss EAP on Oracle Linux
+  hosts: all
+  gather_facts: yes
+  # install_updates can be set in AWX as an extra variable
+  #   - true: Install available JBoss updates (default: false - only check)
+  #   - false: Only check for available updates without installing
+  #
+  # jboss_version_target can be set in AWX as an extra variable
+  #   - If specified: Upgrade to specific version (e.g., "7.4.0", "7.3.0")
+  #   - If not set: Upgrade to latest available
+  #
+  # test_fail can be set in AWX as an extra variable
+  #   - true: Force fail for testing error handling (default: false)
+  #   - false: Normal execution
+  tags:
+    - patch-jboss
+
+  tasks:
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
+    
+    - name: Get formatted date and time
+      set_fact:
+        patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        patch_time: "{{ ansible_date_time.time }}"
+    
+    # ========================================
+    # Step 1: Detect JBoss Installation Method
+    # ========================================
+    
+    - name: Check if JBoss is installed from RPM
+      shell: rpm -qa | grep -i "eap7\|jboss"
+      register: jboss_rpm_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check common JBoss installation directories
+      stat:
+        path: "{{ item }}"
+      register: jboss_dir_check
+      loop:
+        - /opt/jboss
+        - /opt/jboss-eap
+        - /opt/jboss-eap-7.4
+        - /opt/jboss-eap-7.3
+        - /opt/jboss-eap-7.2
+        - /usr/share/jboss-eap
+        - /var/lib/jboss-eap
+      ignore_errors: yes
+    
+    - name: Find actual JBoss installation directory
+      set_fact:
+        jboss_home: "{{ item.stat.path }}"
+      when: item.stat.exists and item.stat.isdir
+      loop: "{{ jboss_dir_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Check for JBoss in custom JBOSS_HOME environment
+      shell: |
+        if [ -n "$JBOSS_HOME" ]; then
+          echo "$JBOSS_HOME"
+        elif [ -f /etc/profile.d/jboss.sh ]; then
+          source /etc/profile.d/jboss.sh && echo "$JBOSS_HOME"
+        else
+          echo ""
+        fi
+      register: jboss_env_home
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Set JBoss home from environment if found
+      set_fact:
+        jboss_home: "{{ jboss_env_home.stdout }}"
+      when: 
+        - jboss_env_home.stdout is defined
+        - jboss_env_home.stdout != ""
+        - jboss_home is not defined
+    
+    - name: Determine JBoss installation status
+      set_fact:
+        jboss_installed: "{{ (jboss_rpm_check.rc == 0) or (jboss_home is defined and jboss_home != '') }}"
+    
+    - name: Fail if JBoss is not installed
+      fail:
+        msg: "JBoss EAP is not installed on this host. Please install JBoss before running patch."
+      when: not jboss_installed
+    
+    # ========================================
+    # Step 2: Detect JBoss Installation Type
+    # ========================================
+    
+    - name: Set installation method
+      set_fact:
+        jboss_install_method: "{{ 'rpm' if (jboss_rpm_check.rc == 0) else 'zip' }}"
+      when: jboss_installed
+    
+    - name: Check JBoss mode (Standalone vs Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/configuration" ]; then
+          if [ -d "{{ jboss_home }}/domain/configuration" ]; then
+            echo "Both"
+          else
+            echo "Standalone"
+          fi
+        elif [ -d "{{ jboss_home }}/domain/configuration" ]; then
+          echo "Domain"
+        else
+          echo "Unknown"
+        fi
+      register: jboss_mode_check
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_home is defined
+    
+    - name: Set JBoss mode
+      set_fact:
+        jboss_mode: "{{ jboss_mode_check.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 3: Get JBoss Version Information
+    # ========================================
+    
+    - name: Get current JBoss version (from RPM)
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' $(rpm -qa | grep -i "eap7\|jboss" | head -1) 2>/dev/null || echo "Unknown"
+      register: jboss_version_rpm
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+    
+    - name: Get current JBoss version (from version.txt or product.conf)
+      shell: |
+        if [ -f "{{ jboss_home }}/version.txt" ]; then
+          cat "{{ jboss_home }}/version.txt" | head -1
+        elif [ -f "{{ jboss_home }}/bin/product.conf" ]; then
+          grep "slot=" "{{ jboss_home }}/bin/product.conf" | cut -d'=' -f2
+        else
+          echo "Unknown"
+        fi
+      register: jboss_version_zip
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_home is defined
+    
+    - name: Set JBoss version
+      set_fact:
+        jboss_version_current: "{{ jboss_version_rpm.stdout if (jboss_install_method == 'rpm') else jboss_version_zip.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 4: Check JBoss Service Status
+    # ========================================
+    
+    - name: Check JBoss systemd service names
+      shell: |
+        systemctl list-units --type=service --all | grep -i jboss | awk '{print $1}' | head -1
+      register: jboss_service_name
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Get JBoss service status
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Check if JBoss is running (process check)
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_process_check
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Set JBoss running status
+      set_fact:
+        jboss_running: "{{ (jboss_service_status.stdout | default('inactive') == 'active') or (jboss_process_check.stdout | default('0') | int > 0) }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Display Installation Summary
+    # ========================================
+    
+    - name: Display JBoss installation detection summary
+      debug:
+        msg:
+          - "=========================================="
+          - "JBoss Installation Detection Summary"
+          - "Host: {{ inventory_hostname }}"
+          - "Installation Method: {{ jboss_install_method | default('Unknown') }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Current Version: {{ jboss_version_current | default('Unknown') }}"
+          - "Service Name: {{ jboss_service_name.stdout | default('Not Found') }}"
+          - "Service Status: {{ jboss_service_status.stdout | default('Unknown') }}"
+          - "Process Running: {{ 'Yes' if jboss_running else 'No' }}"
+          - "=========================================="
+      when: jboss_installed

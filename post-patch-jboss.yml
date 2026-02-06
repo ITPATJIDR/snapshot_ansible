@@ -1,0 +1,508 @@
+---
+- name: Post-Patch Verification and Restart for JBoss EAP
+  hosts: all
+  gather_facts: yes
+  # verify_only can be set in AWX as an extra variable
+  #   - true: Only verify patch without restart (default: false)
+  #   - false: Restart and verify
+  #
+  # test_fail can be set in AWX as an extra variable
+  #   - true: Force fail for testing error handling (default: false)
+  #   - false: Normal execution
+  tags:
+    - post-patch-jboss
+
+  tasks:
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
+    
+    - name: Get formatted date and time
+      set_fact:
+        verify_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
+        verify_time: "{{ ansible_date_time.time }}"
+    
+    # ========================================
+    # Step 1: Detect JBoss Installation
+    # ========================================
+    
+    - name: Check if JBoss is installed from RPM
+      shell: rpm -qa | grep -i "eap7\|jboss"
+      register: jboss_rpm_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check common JBoss installation directories
+      stat:
+        path: "{{ item }}"
+      register: jboss_dir_check
+      loop:
+        - /opt/jboss
+        - /opt/jboss-eap
+        - /opt/jboss-eap-7.4
+        - /opt/jboss-eap-7.3
+        - /opt/jboss-eap-7.2
+        - /usr/share/jboss-eap
+        - /var/lib/jboss-eap
+      ignore_errors: yes
+    
+    - name: Find actual JBoss installation directory
+      set_fact:
+        jboss_home: "{{ item.stat.path }}"
+      when: item.stat.exists and item.stat.isdir
+      loop: "{{ jboss_dir_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Check for JBoss in custom JBOSS_HOME environment
+      shell: |
+        if [ -n "$JBOSS_HOME" ]; then
+          echo "$JBOSS_HOME"
+        elif [ -f /etc/profile.d/jboss.sh ]; then
+          source /etc/profile.d/jboss.sh && echo "$JBOSS_HOME"
+        else
+          echo ""
+        fi
+      register: jboss_env_home
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Set JBoss home from environment if found
+      set_fact:
+        jboss_home: "{{ jboss_env_home.stdout }}"
+      when: 
+        - jboss_env_home.stdout is defined
+        - jboss_env_home.stdout != ""
+        - jboss_home is not defined
+    
+    - name: Determine JBoss installation status
+      set_fact:
+        jboss_installed: "{{ (jboss_rpm_check.rc == 0) or (jboss_home is defined and jboss_home != '') }}"
+    
+    - name: Fail if JBoss is not installed
+      fail:
+        msg: "JBoss EAP is not installed on this host. Cannot perform post-patch verification."
+      when: not jboss_installed
+    
+    - name: Set installation method
+      set_fact:
+        jboss_install_method: "{{ 'rpm' if (jboss_rpm_check.rc == 0) else 'zip' }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 2: Get JBoss Configuration Details
+    # ========================================
+    
+    - name: Check JBoss mode (Standalone vs Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/configuration" ]; then
+          if [ -d "{{ jboss_home }}/domain/configuration" ]; then
+            echo "Both"
+          else
+            echo "Standalone"
+          fi
+        elif [ -d "{{ jboss_home }}/domain/configuration" ]; then
+          echo "Domain"
+        else
+          echo "Unknown"
+        fi
+      register: jboss_mode_check
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_home is defined
+    
+    - name: Set JBoss mode
+      set_fact:
+        jboss_mode: "{{ jboss_mode_check.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    - name: Get current JBoss version (from RPM)
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' $(rpm -qa | grep -i "eap7\|jboss" | head -1) 2>/dev/null || echo "Unknown"
+      register: jboss_version_rpm
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+    
+    - name: Get current JBoss version (from version.txt or product.conf)
+      shell: |
+        if [ -f "{{ jboss_home }}/version.txt" ]; then
+          cat "{{ jboss_home }}/version.txt" | head -1
+        elif [ -f "{{ jboss_home }}/bin/product.conf" ]; then
+          grep "slot=" "{{ jboss_home }}/bin/product.conf" | cut -d'=' -f2
+        else
+          echo "Unknown"
+        fi
+      register: jboss_version_zip
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_home is defined
+    
+    - name: Set JBoss current version
+      set_fact:
+        jboss_version_current: "{{ jboss_version_rpm.stdout if (jboss_install_method == 'rpm') else jboss_version_zip.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 3: Check JBoss Service Status Before Restart
+    # ========================================
+    
+    - name: Check JBoss systemd service names
+      shell: |
+        systemctl list-units --type=service --all | grep -i jboss | awk '{print $1}' | head -1
+      register: jboss_service_name
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Get JBoss service status before restart
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_before
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Check if JBoss is running (process check)
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_process_check
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Set JBoss running status
+      set_fact:
+        jboss_running: "{{ (jboss_service_status_before.stdout | default('inactive') == 'active') or (jboss_process_check.stdout | default('0') | int > 0) }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 4: Verify Patch Installation (Before Restart)
+    # ========================================
+    
+    - name: Get patch info via CLI (ZIP method)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="patch info" 2>/dev/null || {{ jboss_home }}/bin/jboss-cli.sh --command="patch info" 2>/dev/null
+      register: patch_info_before
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Display patch info before restart
+      debug:
+        msg:
+          - "=========================================="
+          - "Patch Information (Before Restart)"
+          - "{{ patch_info_before.stdout_lines | default(['No patch info available']) }}"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - patch_info_before is defined
+    
+    # ========================================
+    # Step 5: Restart JBoss Server
+    # ========================================
+    
+    - name: Restart JBoss via CLI (ZIP method - Standalone)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="shutdown --restart=true"
+      register: cli_restart_standalone
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_mode == 'Standalone'
+        - jboss_running
+        - not (verify_only | default(false) | bool)
+      ignore_errors: yes
+    
+    - name: Restart JBoss via CLI (ZIP method - Domain)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="shutdown --restart=true --host={{ domain_host | default('master') }}"
+      register: cli_restart_domain
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_mode in ['Domain', 'Both']
+        - jboss_running
+        - not (verify_only | default(false) | bool)
+      ignore_errors: yes
+    
+    - name: Restart JBoss via systemd (RPM method or fallback)
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: restarted
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm' or (cli_restart_standalone is failed and cli_restart_domain is failed)
+        - jboss_service_name.stdout is defined
+        - jboss_service_name.stdout != ""
+        - not (verify_only | default(false) | bool)
+      ignore_errors: yes
+      register: systemd_restart
+    
+    - name: Wait for JBoss to restart
+      wait_for:
+        timeout: 90
+      when: 
+        - jboss_installed
+        - not (verify_only | default(false) | bool)
+        - (cli_restart_standalone is succeeded) or (cli_restart_domain is succeeded) or (systemd_restart is succeeded)
+    
+    # ========================================
+    # Step 6: Verify JBoss is Running After Restart
+    # ========================================
+    
+    - name: Get JBoss service status after restart
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_after
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Check if JBoss is running after restart (process check)
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_process_after
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Set JBoss running status after restart
+      set_fact:
+        jboss_running_after: "{{ (jboss_service_status_after.stdout | default('inactive') == 'active') or (jboss_process_after.stdout | default('0') | int > 0) }}"
+      when: jboss_installed
+    
+    - name: Wait for JBoss management interface to be ready
+      wait_for:
+        timeout: 60
+      when: 
+        - jboss_installed
+        - jboss_running_after
+        - not (verify_only | default(false) | bool)
+    
+    # ========================================
+    # Step 7: Verify Patch Installation (After Restart)
+    # ========================================
+    
+    - name: Get patch info via CLI after restart (ZIP method)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="patch info" 2>/dev/null
+      register: patch_info_after
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_running_after
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Get patch history via CLI (ZIP method)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="patch history" 2>/dev/null
+      register: patch_history
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_running_after
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Get server info via CLI
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command=":read-attribute(name=product-version)" 2>/dev/null
+      register: server_product_version
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_running_after
+      ignore_errors: yes
+      changed_when: false
+    
+    # ========================================
+    # Step 8: Check for RPM package updates
+    # ========================================
+    
+    - name: Get installed RPM package info
+      shell: |
+        rpm -qi $(rpm -qa | grep -i "eap7\|jboss" | head -1) 2>/dev/null || echo "No RPM info"
+      register: rpm_package_info
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check for remaining .rpmnew files
+      shell: |
+        find {{ jboss_home }} -name "*.rpmnew" 2>/dev/null | wc -l
+      register: rpmnew_count
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+      ignore_errors: yes
+      changed_when: false
+    
+    # ========================================
+    # Step 9: Verify Deployments
+    # ========================================
+    
+    - name: List deployments (Standalone)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/deployments" ]; then
+          ls -lh "{{ jboss_home }}/standalone/deployments/" | grep -E "\\.war$|\\.ear$|\\.jar$" || echo "No deployments found"
+        fi
+      register: deployments_standalone
+      when: 
+        - jboss_installed
+        - jboss_mode in ['Standalone', 'Both']
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check deployment status via CLI (ZIP method)
+      shell: |
+        {{ jboss_home }}/bin/jboss-cli.sh --connect --command="deployment-info" 2>/dev/null
+      register: deployment_status_cli
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_running_after
+      ignore_errors: yes
+      changed_when: false
+    
+    # ========================================
+    # Step 10: Display Post-Patch Verification Summary
+    # ========================================
+    
+    - name: Display post-patch verification summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Post-Patch Verification Summary"
+          - "Host: {{ inventory_hostname }}"
+          - "Verification Date: {{ verify_date }}"
+          - "Verification Time: {{ verify_time }}"
+          - "Installation Method: {{ jboss_install_method | upper }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Current Version: {{ jboss_version_current | default('Unknown') }}"
+          - "Service Status Before: {{ jboss_service_status_before.stdout | default('Unknown') }}"
+          - "Service Status After: {{ jboss_service_status_after.stdout | default('Unknown') }}"
+          - "Restart Successful: {{ 'Yes' if ((cli_restart_standalone is succeeded) or (cli_restart_domain is succeeded) or (systemd_restart is succeeded)) else 'No/Skipped' }}"
+          - "JBoss Running: {{ 'Yes' if jboss_running_after else 'No' }}"
+          - "{{ '.rpmnew files remaining: ' + rpmnew_count.stdout if (jboss_install_method == 'rpm' and rpmnew_count is defined) else '' }}"
+          - "=========================================="
+      when: jboss_installed
+    
+    - name: Display patch info details (ZIP method)
+      debug:
+        msg:
+          - "=========================================="
+          - "Patch Information (After Restart)"
+          - "{{ patch_info_after.stdout_lines | default(['Unable to retrieve patch info']) }}"
+          - "=========================================="
+          - "Patch History"
+          - "{{ patch_history.stdout_lines | default(['Unable to retrieve patch history']) }}"
+          - "=========================================="
+          - "Product Version"
+          - "{{ server_product_version.stdout_lines | default(['Unable to retrieve product version']) }}"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - patch_info_after is defined
+    
+    - name: Display deployment status
+      debug:
+        msg:
+          - "=========================================="
+          - "Deployment Status"
+          - "{{ deployment_status_cli.stdout_lines | default(['Unable to retrieve deployment status']) }}"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - deployment_status_cli is defined
+        - deployment_status_cli.stdout is defined
+    
+    - name: Display RPM package info
+      debug:
+        msg:
+          - "=========================================="
+          - "RPM Package Information"
+          - "{{ rpm_package_info.stdout_lines | default(['No RPM info available']) }}"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+        - rpm_package_info is defined
+    
+    # ========================================
+    # Step 11: Warnings and Recommendations
+    # ========================================
+    
+    - name: Display warnings if service not running
+      debug:
+        msg:
+          - "=========================================="
+          - "WARNING: JBoss service is not running!"
+          - "Please check the logs for errors:"
+          - "  - Standalone: {{ jboss_home }}/standalone/log/server.log"
+          - "  - Domain: {{ jboss_home }}/domain/log/process-controller.log"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - not jboss_running_after
+    
+    - name: Display warning about .rpmnew files
+      debug:
+        msg:
+          - "=========================================="
+          - "WARNING: {{ rpmnew_count.stdout }} .rpmnew files still exist!"
+          - "You must manually merge these configuration files"
+          - "to enable new features from the patch."
+          - "Use: find {{ jboss_home }} -name '*.rpmnew'"
+          - "=========================================="
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+        - rpmnew_count is defined
+        - rpmnew_count.stdout | int > 0
+    
+    # ========================================
+    # Step 12: Store Verification Result for Reporting
+    # ========================================
+    
+    - name: Store verification result for reporting
+      set_fact:
+        verification_result:
+          server: "{{ inventory_hostname }}"
+          job_name: "post-patch-jboss"
+          status: "{{ 'success' if jboss_running_after else 'failed' }}"
+          verify_date: "{{ verify_date }}"
+          verify_time: "{{ verify_time }}"
+          install_method: "{{ jboss_install_method }}"
+          jboss_mode: "{{ jboss_mode | default('Unknown') }}"
+          current_version: "{{ jboss_version_current | default('Unknown') }}"
+          service_status: "{{ jboss_service_status_after.stdout | default('Unknown') }}"
+          restart_successful: "{{ (cli_restart_standalone is succeeded) or (cli_restart_domain is succeeded) or (systemd_restart is succeeded) }}"
+          jboss_running: "{{ jboss_running_after }}"
+          rpmnew_files_count: "{{ rpmnew_count.stdout | default(0) }}"
+      when: jboss_installed

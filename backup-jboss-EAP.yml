@@ -1,0 +1,515 @@
+---
+- name: Backup JBoss EAP
+  hosts: all
+  gather_facts: yes
+  # backup_path can be set in AWX as an extra variable
+  #   - If specified: Use custom backup path (e.g., "/backup/jboss")
+  #   - If not set: Use default /var/backups/jboss (default)
+  #
+  # keep_backups can be set in AWX as an extra variable
+  #   - Number of backup copies to keep (default: 5)
+  #   - Older backups will be automatically deleted
+  #
+  # compress_backup can be set in AWX as an extra variable
+  #   - true: Create compressed tar.gz backup (default: true)
+  #   - false: Create uncompressed backup
+  #
+  # stop_before_backup can be set in AWX as an extra variable
+  #   - true: Stop JBoss service before backup (more consistent backup)
+  #   - false: Backup while running (default: false)
+  #
+  # test_fail can be set in AWX as an extra variable
+  #   - true: Force fail for testing error handling (default: false)
+  #   - false: Normal execution
+  tags:
+    - backup-jboss
+
+  tasks:
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
+    
+    - name: Get formatted date and time for backup naming
+      set_fact:
+        backup_date: "{{ ansible_date_time.date }}"
+        backup_time: "{{ ansible_date_time.time.replace(':', '-') }}"
+        backup_timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.time.replace(':', '-') }}"
+    
+    # ========================================
+    # Step 1: Detect JBoss Installation (reuse from check-jboss.yml)
+    # ========================================
+    
+    - name: Check if JBoss is installed from RPM
+      shell: rpm -qa | grep -i "eap7\|jboss"
+      register: jboss_rpm_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Check common JBoss installation directories
+      stat:
+        path: "{{ item }}"
+      register: jboss_dir_check
+      loop:
+        - /opt/jboss
+        - /opt/jboss-eap
+        - /opt/jboss-eap-7.4
+        - /opt/jboss-eap-7.3
+        - /opt/jboss-eap-7.2
+        - /usr/share/jboss-eap
+        - /var/lib/jboss-eap
+      ignore_errors: yes
+    
+    - name: Find actual JBoss installation directory
+      set_fact:
+        jboss_home: "{{ item.stat.path }}"
+      when: item.stat.exists and item.stat.isdir
+      loop: "{{ jboss_dir_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Check for JBoss in custom JBOSS_HOME environment
+      shell: |
+        if [ -n "$JBOSS_HOME" ]; then
+          echo "$JBOSS_HOME"
+        elif [ -f /etc/profile.d/jboss.sh ]; then
+          source /etc/profile.d/jboss.sh && echo "$JBOSS_HOME"
+        else
+          echo ""
+        fi
+      register: jboss_env_home
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Set JBoss home from environment if found
+      set_fact:
+        jboss_home: "{{ jboss_env_home.stdout }}"
+      when: 
+        - jboss_env_home.stdout is defined
+        - jboss_env_home.stdout != ""
+        - jboss_home is not defined
+    
+    - name: Determine JBoss installation status
+      set_fact:
+        jboss_installed: "{{ (jboss_rpm_check.rc == 0) or (jboss_home is defined and jboss_home != '') }}"
+    
+    - name: Fail if JBoss is not installed
+      fail:
+        msg: "JBoss EAP is not installed on this host. Cannot perform backup."
+      when: not jboss_installed
+    
+    # ========================================
+    # Step 2: Get JBoss Configuration Details
+    # ========================================
+    
+    - name: Set installation method
+      set_fact:
+        jboss_install_method: "{{ 'rpm' if (jboss_rpm_check.rc == 0) else 'zip' }}"
+      when: jboss_installed
+    
+    - name: Check JBoss mode (Standalone vs Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/configuration" ]; then
+          if [ -d "{{ jboss_home }}/domain/configuration" ]; then
+            echo "Both"
+          else
+            echo "Standalone"
+          fi
+        elif [ -d "{{ jboss_home }}/domain/configuration" ]; then
+          echo "Domain"
+        else
+          echo "Unknown"
+        fi
+      register: jboss_mode_check
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_home is defined
+    
+    - name: Set JBoss mode
+      set_fact:
+        jboss_mode: "{{ jboss_mode_check.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    - name: Get current JBoss version (from RPM)
+      shell: |
+        rpm -q --queryformat '%{VERSION}-%{RELEASE}' $(rpm -qa | grep -i "eap7\|jboss" | head -1) 2>/dev/null || echo "Unknown"
+      register: jboss_version_rpm
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'rpm'
+    
+    - name: Get current JBoss version (from version.txt or product.conf)
+      shell: |
+        if [ -f "{{ jboss_home }}/version.txt" ]; then
+          cat "{{ jboss_home }}/version.txt" | head -1
+        elif [ -f "{{ jboss_home }}/bin/product.conf" ]; then
+          grep "slot=" "{{ jboss_home }}/bin/product.conf" | cut -d'=' -f2
+        else
+          echo "Unknown"
+        fi
+      register: jboss_version_zip
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - jboss_install_method == 'zip'
+        - jboss_home is defined
+    
+    - name: Set JBoss version
+      set_fact:
+        jboss_version_current: "{{ jboss_version_rpm.stdout if (jboss_install_method == 'rpm') else jboss_version_zip.stdout | default('Unknown') }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 3: Check JBoss Service Status
+    # ========================================
+    
+    - name: Check JBoss systemd service names
+      shell: |
+        systemctl list-units --type=service --all | grep -i jboss | awk '{print $1}' | head -1
+      register: jboss_service_name
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Get JBoss service status
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_before
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Check if JBoss is running (process check)
+      shell: |
+        ps aux | grep -i "[j]boss" | grep -i "java" | wc -l
+      register: jboss_process_check
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Set JBoss running status
+      set_fact:
+        jboss_running: "{{ (jboss_service_status_before.stdout | default('inactive') == 'active') or (jboss_process_check.stdout | default('0') | int > 0) }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 4: Prepare Backup Directory
+    # ========================================
+    
+    - name: Set backup base path
+      set_fact:
+        backup_base_path: "{{ backup_path | default('/var/backups/jboss') }}"
+      when: jboss_installed
+    
+    - name: Create backup directory
+      file:
+        path: "{{ backup_base_path }}"
+        state: directory
+        mode: '0755'
+      when: jboss_installed
+    
+    - name: Set backup file name
+      set_fact:
+        backup_filename: "jboss-eap-{{ jboss_version_current | default('unknown') | replace('/', '-') }}-{{ backup_timestamp }}"
+        backup_full_path: "{{ backup_base_path }}/jboss-eap-{{ jboss_version_current | default('unknown') | replace('/', '-') }}-{{ backup_timestamp }}"
+      when: jboss_installed
+    
+    - name: Display backup information
+      debug:
+        msg:
+          - "=========================================="
+          - "JBoss Backup Information"
+          - "Host: {{ inventory_hostname }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Current Version: {{ jboss_version_current | default('Unknown') }}"
+          - "Service Status: {{ jboss_service_status_before.stdout | default('Unknown') }}"
+          - "Backup Path: {{ backup_full_path }}"
+          - "Compress: {{ compress_backup | default(true) | bool }}"
+          - "Stop Before Backup: {{ stop_before_backup | default(false) | bool }}"
+          - "=========================================="
+      when: jboss_installed
+    
+    # ========================================
+    # Step 5: Stop JBoss Service (Optional)
+    # ========================================
+    
+    - name: Stop JBoss service before backup
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: stopped
+      when: 
+        - jboss_installed
+        - stop_before_backup | default(false) | bool
+        - jboss_service_name.stdout is defined
+        - jboss_service_name.stdout != ""
+        - jboss_running
+      ignore_errors: yes
+      register: jboss_stopped
+    
+    - name: Wait for JBoss to stop completely
+      wait_for:
+        timeout: 30
+      when: 
+        - jboss_installed
+        - stop_before_backup | default(false) | bool
+        - jboss_stopped is defined
+        - jboss_stopped is succeeded
+    
+    # ========================================
+    # Step 6: Perform Backup
+    # ========================================
+    
+    - name: Get size of JBoss home directory
+      shell: |
+        du -sh "{{ jboss_home }}" | awk '{print $1}'
+      register: jboss_home_size
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Backup JBoss EAP (Compressed)
+      shell: |
+        tar -czf "{{ backup_full_path }}.tar.gz" \
+          -C "{{ jboss_home | dirname }}" \
+          "{{ jboss_home | basename }}"
+      register: backup_compressed
+      when: 
+        - jboss_installed
+        - compress_backup | default(true) | bool
+      ignore_errors: yes
+    
+    - name: Backup JBoss EAP (Uncompressed)
+      shell: |
+        cp -r "{{ jboss_home }}" "{{ backup_full_path }}"
+      register: backup_uncompressed
+      when: 
+        - jboss_installed
+        - not (compress_backup | default(true) | bool)
+      ignore_errors: yes
+    
+    - name: Get backup file size
+      shell: |
+        if [ -f "{{ backup_full_path }}.tar.gz" ]; then
+          du -sh "{{ backup_full_path }}.tar.gz" | awk '{print $1}'
+        elif [ -d "{{ backup_full_path }}" ]; then
+          du -sh "{{ backup_full_path }}" | awk '{print $1}'
+        else
+          echo "Unknown"
+        fi
+      register: backup_size
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Verify backup was created
+      stat:
+        path: "{{ backup_full_path }}{{ '.tar.gz' if (compress_backup | default(true) | bool) else '' }}"
+      register: backup_verify
+      when: jboss_installed
+    
+    - name: Set backup success status
+      set_fact:
+        backup_success: "{{ backup_verify.stat.exists | default(false) }}"
+      when: jboss_installed
+    
+    # ========================================
+    # Step 7: Backup Important Configuration Files Separately
+    # ========================================
+    
+    - name: Create configuration backup directory
+      file:
+        path: "{{ backup_full_path }}-configs"
+        state: directory
+        mode: '0755'
+      when: 
+        - jboss_installed
+        - backup_success
+    
+    - name: Backup Standalone configuration files
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/configuration" ]; then
+          cp -r "{{ jboss_home }}/standalone/configuration" "{{ backup_full_path }}-configs/standalone-configuration"
+        fi
+      when: 
+        - jboss_installed
+        - backup_success
+        - jboss_mode in ['Standalone', 'Both']
+      ignore_errors: yes
+    
+    - name: Backup Domain configuration files
+      shell: |
+        if [ -d "{{ jboss_home }}/domain/configuration" ]; then
+          cp -r "{{ jboss_home }}/domain/configuration" "{{ backup_full_path }}-configs/domain-configuration"
+        fi
+      when: 
+        - jboss_installed
+        - backup_success
+        - jboss_mode in ['Domain', 'Both']
+      ignore_errors: yes
+    
+    - name: Backup Deployments (Standalone)
+      shell: |
+        if [ -d "{{ jboss_home }}/standalone/deployments" ]; then
+          cp -r "{{ jboss_home }}/standalone/deployments" "{{ backup_full_path }}-configs/standalone-deployments"
+        fi
+      when: 
+        - jboss_installed
+        - backup_success
+        - jboss_mode in ['Standalone', 'Both']
+      ignore_errors: yes
+    
+    - name: Backup Deployments (Domain)
+      shell: |
+        if [ -d "{{ jboss_home }}/domain/deployments" ]; then
+          cp -r "{{ jboss_home }}/domain/deployments" "{{ backup_full_path }}-configs/domain-deployments"
+        fi
+      when: 
+        - jboss_installed
+        - backup_success
+        - jboss_mode in ['Domain', 'Both']
+      ignore_errors: yes
+    
+    - name: List configuration backup contents
+      shell: |
+        ls -lah "{{ backup_full_path }}-configs/"
+      register: config_backup_list
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - backup_success
+    
+    # ========================================
+    # Step 8: Restart JBoss Service (if stopped)
+    # ========================================
+    
+    - name: Restart JBoss service after backup
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: started
+      when: 
+        - jboss_installed
+        - stop_before_backup | default(false) | bool
+        - jboss_stopped is defined
+        - jboss_stopped is succeeded
+      ignore_errors: yes
+      register: jboss_restarted
+    
+    - name: Wait for JBoss to start
+      wait_for:
+        timeout: 30
+      when: 
+        - jboss_installed
+        - jboss_restarted is defined
+        - jboss_restarted is succeeded
+    
+    - name: Get JBoss service status after restart
+      shell: |
+        if [ -n "{{ jboss_service_name.stdout | default('') }}" ]; then
+          systemctl is-active "{{ jboss_service_name.stdout }}" 2>/dev/null || echo "inactive"
+        else
+          echo "no-service"
+        fi
+      register: jboss_service_status_after
+      ignore_errors: yes
+      changed_when: false
+      when: 
+        - jboss_installed
+        - stop_before_backup | default(false) | bool
+    
+    # ========================================
+    # Step 9: Cleanup Old Backups
+    # ========================================
+    
+    - name: Find all JBoss backups
+      shell: |
+        ls -t "{{ backup_base_path }}"/jboss-eap-*.tar.gz 2>/dev/null || true
+      register: backup_list
+      ignore_errors: yes
+      changed_when: false
+      when: jboss_installed
+    
+    - name: Count existing backups
+      set_fact:
+        backup_count: "{{ backup_list.stdout_lines | length }}"
+      when: 
+        - jboss_installed
+        - backup_list.stdout_lines is defined
+    
+    - name: Remove old backups (keep only specified number)
+      shell: |
+        ls -t "{{ backup_base_path }}"/jboss-eap-*.tar.gz | tail -n +{{ (keep_backups | default(5) | int) + 1 }} | xargs -r rm -f
+      when: 
+        - jboss_installed
+        - backup_count is defined
+        - backup_count | int > (keep_backups | default(5) | int)
+      ignore_errors: yes
+    
+    - name: Remove old configuration backup directories
+      shell: |
+        ls -td "{{ backup_base_path }}"/jboss-eap-*-configs 2>/dev/null | tail -n +{{ (keep_backups | default(5) | int) + 1 }} | xargs -r rm -rf
+      when: 
+        - jboss_installed
+        - backup_count is defined
+        - backup_count | int > (keep_backups | default(5) | int)
+      ignore_errors: yes
+    
+    # ========================================
+    # Step 10: Display Backup Summary
+    # ========================================
+    
+    - name: Display backup summary
+      debug:
+        msg:
+          - "=========================================="
+          - "JBoss Backup Summary"
+          - "Host: {{ inventory_hostname }}"
+          - "Backup Date: {{ backup_date }}"
+          - "Backup Time: {{ backup_time }}"
+          - "JBoss Home: {{ jboss_home | default('Not Found') }}"
+          - "JBoss Version: {{ jboss_version_current | default('Unknown') }}"
+          - "JBoss Mode: {{ jboss_mode | default('Unknown') }}"
+          - "Original Size: {{ jboss_home_size.stdout | default('Unknown') }}"
+          - "Backup File: {{ backup_full_path }}{{ '.tar.gz' if (compress_backup | default(true) | bool) else '' }}"
+          - "Backup Size: {{ backup_size.stdout | default('Unknown') }}"
+          - "Backup Success: {{ 'Yes' if backup_success else 'Failed' }}"
+          - "Service Stopped: {{ 'Yes' if (stop_before_backup | default(false) | bool and jboss_stopped is succeeded) else 'No' }}"
+          - "Service Restarted: {{ 'Yes' if (jboss_restarted is succeeded) else 'No' }}"
+          - "Service Status After: {{ jboss_service_status_after.stdout | default('N/A') }}"
+          - "Backups Kept: {{ keep_backups | default(5) }}"
+          - "=========================================="
+      when: jboss_installed
+    
+    # ========================================
+    # Step 11: Store Backup Result for Reporting
+    # ========================================
+    
+    - name: Store backup result for reporting
+      set_fact:
+        backup_result:
+          server: "{{ inventory_hostname }}"
+          job_name: "backup-jboss-eap"
+          status: "{{ 'success' if backup_success else 'failed' }}"
+          backup_date: "{{ backup_date }}"
+          backup_time: "{{ backup_time }}"
+          jboss_home: "{{ jboss_home | default('Not Found') }}"
+          jboss_version: "{{ jboss_version_current | default('Unknown') }}"
+          jboss_mode: "{{ jboss_mode | default('Unknown') }}"
+          install_method: "{{ jboss_install_method | default('Unknown') }}"
+          backup_path: "{{ backup_full_path }}{{ '.tar.gz' if (compress_backup | default(true) | bool) else '' }}"
+          backup_size: "{{ backup_size.stdout | default('Unknown') }}"
+          original_size: "{{ jboss_home_size.stdout | default('Unknown') }}"
+          compressed: "{{ compress_backup | default(true) | bool }}"
+          service_stopped: "{{ 'Yes' if (stop_before_backup | default(false) | bool and jboss_stopped is succeeded) else 'No' }}"
+          service_status: "{{ jboss_service_status_after.stdout | default(jboss_service_status_before.stdout | default('Unknown')) }}"
+      when: jboss_installed
