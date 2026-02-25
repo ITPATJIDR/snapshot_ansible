@@ -1,0 +1,87 @@
+---
+- name: Linux Upgrade All - Simple (Red Hat)
+  hosts: all
+  gather_facts: yes
+  become: yes
+  # Variables (set as AWX extra vars or survey):
+  #   reboot_if_needed : true / false  (default: false)
+  #   exclude_packages : "kernel*,httpd"  (optional, comma-separated)
+
+  tasks:
+    - name: Check OS family
+      fail:
+        msg: "This playbook supports Red Hat family only (found: {{ ansible_os_family }})"
+      when: ansible_os_family != "RedHat"
+
+    - name: Clean yum/dnf cache
+      command: "{{ 'dnf' if ansible_distribution_major_version | int >= 8 else 'yum' }} clean all"
+
+    - name: Check available updates
+      command: >
+        {{ 'dnf' if ansible_distribution_major_version | int >= 8 else 'yum' }}
+        check-update
+        {{ '--exclude=' + exclude_packages if exclude_packages is defined and exclude_packages | length > 0 else '' }}
+      register: check_update_result
+      changed_when: false
+      failed_when: check_update_result.rc not in [0, 100]
+      # rc=0  : ไม่มี update
+      # rc=100: มี update พร้อม install
+
+    - name: Show update status
+      debug:
+        msg: >-
+          {{ 'มี update พร้อม install บน ' + inventory_hostname
+             if check_update_result.rc == 100
+             else 'ไม่มี update ใหม่บน ' + inventory_hostname }}
+
+    - name: Install all available updates
+      yum:
+        name: "*"
+        state: latest
+        exclude: "{{ exclude_packages | default(omit) }}"
+        update_cache: yes
+      register: upgrade_result
+      when: check_update_result.rc == 100
+
+    - name: Show installed packages count
+      debug:
+        msg: "Updated {{ upgrade_result.changes.updated | default([]) | length }} package(s) on {{ inventory_hostname }}"
+      when: upgrade_result is not skipped
+
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Check if reboot is required (needs-restarting)
+      command: needs-restarting -r
+      register: needs_restarting_result
+      changed_when: false
+      failed_when: false
+      when: reboot_required_file.stat.exists == false
+
+    - name: Set reboot required fact
+      set_fact:
+        reboot_needed: >-
+          {{ reboot_required_file.stat.exists
+             or (needs_restarting_result.rc | default(0) == 1) }}
+
+    - name: Reboot if required
+      reboot:
+        reboot_timeout: 3600
+        pre_reboot_delay: 30
+        post_reboot_delay: 60
+        test_command: uptime
+      when:
+        - reboot_if_needed | default(false) | bool
+        - reboot_needed | bool
+
+    - name: Upgrade summary
+      debug:
+        msg:
+          - "Host             : {{ inventory_hostname }}"
+          - "OS               : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Package manager  : {{ 'dnf' if ansible_distribution_major_version | int >= 8 else 'yum' }}"
+          - "Updates installed: {{ upgrade_result.changes.updated | default([]) | length if upgrade_result is not skipped else 0 }}"
+          - "Reboot required  : {{ reboot_needed }}"
+          - "Rebooted         : {{ reboot_if_needed | default(false) | bool and reboot_needed | bool }}"

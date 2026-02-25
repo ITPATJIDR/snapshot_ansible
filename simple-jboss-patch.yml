@@ -1,0 +1,279 @@
+---
+- name: Simple JBoss EAP Patching on Oracle Linux
+  hosts: all
+  gather_facts: yes
+  become: yes
+  vars:
+    jboss_home: "/data/EAP-7.2.0"
+    jboss_bin: "{{ jboss_home }}/bin"
+    login_url: "https://coreins_test.exim.go.th:8080/coreins/LoginForm.jsp"
+    patch_report_dir: "./patch-report"
+  
+  tasks:
+    # ========================================
+    # Step 1: Pre-Patch - Check JBoss Service
+    # ========================================
+    - name: Step 1 - Check JBoss service status (before patch)
+      shell: ps -ef | grep jboss
+      register: jboss_before_check
+      ignore_errors: yes
+      changed_when: false
+      tags:
+        - pre-check
+    
+    - name: Display JBoss processes (before patch)
+      debug:
+        msg: "{{ jboss_before_check.stdout_lines }}"
+      when: jboss_before_check.rc == 0
+      tags:
+        - pre-check
+    
+    - name: Get JBoss process IDs
+      shell: ps -ef | grep '[j]boss' | awk '{print $2}'
+      register: jboss_pids
+      ignore_errors: yes
+      changed_when: false
+      tags:
+        - pre-check
+    
+    - name: Set JBoss PIDs fact
+      set_fact:
+        jboss_process_ids: "{{ jboss_pids.stdout_lines | default([]) }}"
+      tags:
+        - pre-check
+    
+    # ========================================
+    # Step 2: Kill JBoss Processes
+    # ========================================
+    - name: Step 2 - Kill JBoss processes
+      shell: "kill -9 {{ jboss_process_ids | join(' ') }}"
+      when: 
+        - jboss_process_ids is defined
+        - jboss_process_ids | length > 0
+      ignore_errors: yes
+      register: kill_result
+      tags:
+        - stop-service
+    
+    - name: Wait for processes to terminate
+      wait_for:
+        timeout: 10
+      when: kill_result is changed
+      tags:
+        - stop-service
+    
+    - name: Verify processes are killed
+      shell: ps -ef | grep '[j]boss' | wc -l
+      register: jboss_remaining
+      changed_when: false
+      tags:
+        - stop-service
+    
+    - name: Display process termination status
+      debug:
+        msg: "{{ 'All JBoss processes terminated' if (jboss_remaining.stdout | int == 0) else 'Warning: Some JBoss processes may still be running' }}"
+      tags:
+        - stop-service
+    
+    # ========================================
+    # Step 3: Apply Patch (RPM Update)
+    # ========================================
+    - name: Step 3 - Check for available JBoss updates
+      shell: yum list updates | grep -i 'eap7\|jboss'
+      register: jboss_updates_check
+      ignore_errors: yes
+      changed_when: false
+      tags:
+        - apply-patch
+    
+    - name: Display available updates
+      debug:
+        msg: "{{ jboss_updates_check.stdout_lines }}"
+      when: jboss_updates_check.rc == 0
+      tags:
+        - apply-patch
+    
+    - name: Apply JBoss patch via yum update
+      yum:
+        name: '*eap7*'
+        state: latest
+        update_cache: yes
+      register: yum_update_result
+      when: jboss_updates_check.rc == 0
+      tags:
+        - apply-patch
+    
+    - name: Display patch installation result
+      debug:
+        msg: "{{ 'Patch applied successfully' if yum_update_result is changed else 'No updates were installed' }}"
+      tags:
+        - apply-patch
+    
+    # ========================================
+    # Step 4: Restart Server (systemctl restart)
+    # ========================================
+    - name: Step 4 - Check for JBoss systemd service
+      shell: systemctl list-units --type=service --all | grep -i jboss | awk '{print $1}' | head -1
+      register: jboss_service_name
+      ignore_errors: yes
+      changed_when: false
+      tags:
+        - restart-service
+    
+    - name: Restart JBoss service via systemctl
+      systemd:
+        name: "{{ jboss_service_name.stdout }}"
+        state: restarted
+        enabled: yes
+      when: 
+        - jboss_service_name.stdout is defined
+        - jboss_service_name.stdout != ""
+      register: systemctl_restart
+      ignore_errors: yes
+      tags:
+        - restart-service
+    
+    - name: Display systemctl restart status
+      debug:
+        msg: "{{ 'Service restarted via systemctl' if systemctl_restart is changed else 'No systemd service found, will start manually' }}"
+      tags:
+        - restart-service
+    
+    # ========================================
+    # Step 5: Start JBoss Service (domain.sh)
+    # ========================================
+    - name: Step 5 - Start JBoss domain mode manually
+      shell: |
+        cd {{ jboss_bin }}
+        nohup ./domain.sh > /tmp/jboss-domain.log 2>&1 &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+      register: domain_start
+      when: systemctl_restart is not changed
+      tags:
+        - start-service
+    
+    - name: Wait for JBoss to initialize
+      wait_for:
+        timeout: 30
+      tags:
+        - start-service
+    
+    # ========================================
+    # Step 6: Post-Patch - Check JBoss Service
+    # ========================================
+    - name: Step 6 - Check JBoss service status (after patch)
+      shell: ps -ef | grep jboss
+      register: jboss_after_check
+      ignore_errors: yes
+      changed_when: false
+      tags:
+        - post-check
+    
+    - name: Display JBoss processes (after patch)
+      debug:
+        msg: "{{ jboss_after_check.stdout_lines }}"
+      when: jboss_after_check.rc == 0
+      tags:
+        - post-check
+    
+    - name: Verify JBoss is running
+      shell: ps -ef | grep '[j]boss' | wc -l
+      register: jboss_running_count
+      changed_when: false
+      tags:
+        - post-check
+    
+    - name: Set JBoss running status
+      set_fact:
+        jboss_is_running: "{{ (jboss_running_count.stdout | int) > 0 }}"
+      tags:
+        - post-check
+    
+    # ========================================
+    # Step 7: Test Login URL
+    # ========================================
+    - name: Step 7 - Test login URL accessibility
+      uri:
+        url: "{{ login_url }}"
+        method: GET
+        validate_certs: no
+        status_code: [200, 302]
+        timeout: 30
+      register: login_test
+      ignore_errors: yes
+      delegate_to: localhost
+      tags:
+        - test-login
+    
+    - name: Display login test result
+      debug:
+        msg: "{{ 'Login page is accessible' if login_test.status in [200, 302] else 'Warning: Login page may not be accessible yet' }}"
+      tags:
+        - test-login
+    
+    # ========================================
+    # Final Summary Report
+    # ========================================
+    - name: Get formatted date and time
+      set_fact:
+        patch_date: "{{ ansible_date_time.date }}"
+        patch_time: "{{ ansible_date_time.time }}"
+    
+    - name: Display patching summary
+      debug:
+        msg:
+          - "=========================================="
+          - "JBoss EAP Patching Summary"
+          - "Host: {{ inventory_hostname }}"
+          - "Date: {{ patch_date }}"
+          - "Time: {{ patch_time }}"
+          - "=========================================="
+          - "Pre-Patch Processes: {{ jboss_process_ids | length | default(0) }}"
+          - "Processes Killed: {{ 'Yes' if (jboss_remaining.stdout | int == 0) else 'Partial' }}"
+          - "Updates Available: {{ 'Yes' if (jboss_updates_check.rc == 0) else 'No' }}"
+          - "Patch Applied: {{ 'Yes' if (yum_update_result is changed) else 'No' }}"
+          - "Service Restarted: {{ 'Yes' if (systemctl_restart is changed or domain_start is changed) else 'No' }}"
+          - "Post-Patch Running: {{ 'Yes' if jboss_is_running else 'No' }}"
+          - "Login URL Test: {{ login_test.status | default('N/A') }}"
+          - "Login URL: {{ login_url }}"
+          - "=========================================="
+    
+    - name: Create patch report directory
+      file:
+        path: "{{ patch_report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+    
+    - name: Save patching report to JSON
+      copy:
+        content: |
+          {
+            "job_name": "Simple JBoss EAP Patching",
+            "patch_date": "{{ patch_date }}",
+            "patch_time": "{{ patch_time }}",
+            "host": "{{ inventory_hostname }}",
+            "pre_patch": {
+              "processes_found": {{ jboss_process_ids | length | default(0) }},
+              "process_ids": {{ jboss_process_ids | default([]) | to_json }}
+            },
+            "patching": {
+              "processes_killed": {{ (jboss_remaining.stdout | int == 0) | to_json }},
+              "updates_available": {{ (jboss_updates_check.rc == 0) | to_json }},
+              "patch_applied": {{ (yum_update_result is changed) | to_json }},
+              "service_restarted": {{ ((systemctl_restart is changed) or (domain_start is changed)) | to_json }}
+            },
+            "post_patch": {
+              "jboss_running": {{ jboss_is_running | to_json }},
+              "running_processes": {{ jboss_running_count.stdout | int }},
+              "login_url": "{{ login_url }}",
+              "login_status": "{{ login_test.status | default('N/A') }}"
+            },
+            "status": "{{ 'Success' if (jboss_is_running and (login_test.status | default(0) in [200, 302])) else 'Partial Success' }}"
+          }
+        dest: "{{ patch_report_dir }}/jboss-patch-{{ inventory_hostname }}-{{ patch_date | regex_replace('-', '') }}-{{ patch_time | regex_replace(':', '') }}.json"
+      delegate_to: localhost

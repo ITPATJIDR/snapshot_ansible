@@ -150,6 +150,10 @@
       set_fact:
         wsus_server_url: "{{ wsus_server | default('') }}"
     
+    - name: Determine if WSUS is configured
+      set_fact:
+        wsus_is_configured: "{{ (wsus_server_url | length > 0) or ('WSUS_SERVER:http' in (wsus_config_check.stdout | default('')) and 'USE_WSUS:1' in (wsus_config_check.stdout | default(''))) }}"
+    
     - name: Ensure WSUS policy key exists
       win_regedit:
         path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
@@ -225,10 +229,11 @@
       register: wuauserv_status
       ignore_errors: yes
     
-    - name: Search for available updates from WSUS
+    - name: Search for available updates
       win_updates:
         category_names: "{{ update_categories | default(omit) }}"
         state: searched
+        server_selection: "{{ 'managed_server' if wsus_is_configured | bool else 'default' }}"
         log_path: C:\ansible_wsus_updates.log
       register: available_updates
     
@@ -236,7 +241,7 @@
       debug:
         msg:
           - "=========================================="
-          - "Available Windows Updates from WSUS"
+          - "Available Windows Updates{{ ' from WSUS' if wsus_is_configured | bool else ' from Microsoft Update' }}"
           - "Total Updates Found: {{ available_updates.found_update_count | default(0) }}"
           - "=========================================="
     
@@ -250,12 +255,12 @@
       loop: "{{ available_updates.updates | default([], true) }}"
       when: available_updates.found_update_count | default(0) > 0
     
-    - name: Install Windows updates from WSUS
+    - name: Install Windows updates
       win_updates:
         category_names: "{{ update_categories | default(omit) }}"
         state: installed
         log_path: C:\ansible_wsus_updates.log
-        server_selection: "managed_server"
+        server_selection: "{{ 'managed_server' if wsus_is_configured | bool else 'default' }}"
         reboot: no
       register: install_result
       when: 

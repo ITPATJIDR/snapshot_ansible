@@ -1,0 +1,74 @@
+---
+- name: WSUS Upgrade All - Simple
+  hosts: all
+  gather_facts: no
+  # Variables (set as AWX extra vars or survey):
+  #   wsus_server      : "http://wsus-server.domain.com:8530"  (optional)
+  #   reboot_if_needed : true / false  (default: false)
+
+  tasks:
+    - name: Configure WSUS server (if provided)
+      win_regedit:
+        path: "{{ item.path }}"
+        name: "{{ item.name | default(omit) }}"
+        data: "{{ item.data | default(omit) }}"
+        type: "{{ item.type | default(omit) }}"
+        state: present
+      loop:
+        - path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+        - path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+        - path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+          name: WUServer
+          data: "{{ wsus_server }}"
+          type: string
+        - path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+          name: WUStatusServer
+          data: "{{ wsus_server }}"
+          type: string
+        - path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+          name: UseWUServer
+          data: 1
+          type: dword
+      when: wsus_server is defined and wsus_server | length > 0
+
+    - name: Restart Windows Update service
+      win_service:
+        name: wuauserv
+        state: restarted
+      when: wsus_server is defined and wsus_server | length > 0
+
+    - name: Search for available updates
+      win_updates:
+        state: searched
+        log_path: C:\ansible_wsus.log
+      register: available_updates
+
+    - name: Show available updates count
+      debug:
+        msg: "Found {{ available_updates.found_update_count | default(0) }} update(s) on {{ inventory_hostname }}"
+
+    - name: Install all available updates
+      win_updates:
+        state: installed
+        reboot: no
+        log_path: C:\ansible_wsus.log
+      register: install_result
+      when: available_updates.found_update_count | default(0) > 0
+      ignore_errors: yes
+
+    - name: Reboot if required
+      win_reboot:
+        reboot_timeout: 3600
+        pre_reboot_delay: 30
+        post_reboot_delay: 60
+      when:
+        - reboot_if_needed | default(false) | bool
+        - install_result.reboot_required | default(false) | bool
+
+    - name: Patching summary
+      debug:
+        msg:
+          - "Host             : {{ inventory_hostname }}"
+          - "Updates found    : {{ available_updates.found_update_count | default(0) }}"
+          - "Updates installed: {{ install_result.installed_update_count | default(0) }}"
+          - "Reboot required  : {{ install_result.reboot_required | default(false) }}"
