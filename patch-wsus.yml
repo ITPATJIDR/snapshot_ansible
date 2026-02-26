@@ -286,6 +286,33 @@
       run_once: true
       when: wsus_approve_result is defined
 
+    - name: Wait for WSUS to finish downloading approved updates
+      win_shell: |
+        Import-Module UpdateServices -ErrorAction Stop
+        $wsus = Get-WsusServer
+        $status = $wsus.GetStatus()
+        
+        $toDownload = $status.UpdatesToDownload
+        $downloaded = $status.UpdatesDownloaded
+        
+        if ($toDownload -gt 0 -and $downloaded -lt $toDownload) {
+            Write-Output "Downloading: $downloaded / $toDownload updates..."
+            exit 1
+        }
+        
+        Write-Output "All approved updates have been downloaded."
+        exit 0
+      delegate_to: "{{ wsus_server_url | regex_replace('^http[s]?://([^:/]+).*', '\\1') }}"
+      run_once: true
+      register: wsus_download_status
+      until: wsus_download_status.rc == 0
+      retries: 360
+      delay: 60
+      when: 
+        - wsus_is_configured | bool
+        - wsus_server_url | length > 0
+      ignore_errors: yes
+
     - name: Check Windows Update service status
       win_shell: |
         $service = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
