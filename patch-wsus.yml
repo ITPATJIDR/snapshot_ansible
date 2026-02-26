@@ -256,8 +256,15 @@
             foreach ($update in $updates) {
                 if ($mappedCategories.Count -eq 0 -or $mappedCategories -contains $update.UpdateClassificationTitle) {
                     Write-Output "Approving: $($update.Title) [$($update.UpdateClassificationTitle)]"
-                    $update.Approve("Install", $targetGroup) | Out-Null
-                    $approvedCount++
+                    try {
+                        if ($update.RequiresLicenseAgreementAcceptance) {
+                            $update.AcceptLicenseAgreement()
+                        }
+                        $update.Approve("Install", $targetGroup) | Out-Null
+                        $approvedCount++
+                    } catch {
+                        Write-Output "WARNING: Failed to approve $($update.Title) - $($_.Exception.Message)"
+                    }
                 }
             }
             Write-Output "APPROVED_COUNT:$approvedCount"
