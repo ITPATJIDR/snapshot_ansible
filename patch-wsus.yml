@@ -2,6 +2,10 @@
 - name: Patch Windows Server with WSUS
   hosts: all
   gather_facts: yes
+  vars:
+    wsus_server: "http://192.168.101.55:8530"
+    update_categories: ["CriticalUpdates"]
+    install_updates: true
   # wsus_server can be set in AWX as an extra variable
   #   - Format: wsus_server: "http://wsus-server.domain.com:8530" or "https://wsus-server.domain.com:8531"
   #   - If not set, will use default Windows Update settings
@@ -212,6 +216,69 @@
           - "Update Categories: {{ 'All categories' if (update_categories is not defined or update_categories | length == 0) else update_categories }}"
           - "=========================================="
     
+    - name: Auto-Approve updates on WSUS Server
+      win_shell: |
+        Import-Module UpdateServices -ErrorAction Stop
+        
+        $categoryMapping = @{
+            "SecurityUpdates" = "Security Updates"
+            "CriticalUpdates" = "Critical Updates"
+            "UpdateRollups" = "Update Rollups"
+            "DefinitionUpdates" = "Definition Updates"
+            "FeaturePacks" = "Feature Packs"
+            "ServicePacks" = "Service Packs"
+            "Tools" = "Tools"
+            "Updates" = "Updates"
+        }
+        
+        $selectedCategories = @(
+        {% for cat in update_categories | default([]) %}
+          "{{ cat }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+        )
+        
+        $mappedCategories = $selectedCategories | ForEach-Object { 
+            if ($categoryMapping.ContainsKey($_)) { $categoryMapping[$_] } else { $_ }
+        }
+        
+        try {
+            $wsus = Get-WsusServer
+            $targetGroup = $wsus.GetComputerTargetGroups() | Where-Object { $_.Name -eq "All Computers" }
+            
+            if (-not $targetGroup) {
+                Write-Output "Target group 'All Computers' not found."
+                exit 0
+            }
+            
+            $updates = $wsus.GetUpdates() | Where-Object { $_.IsApproved -eq $false }
+            
+            $approvedCount = 0
+            foreach ($update in $updates) {
+                if ($mappedCategories.Count -eq 0 -or $mappedCategories -contains $update.UpdateClassificationTitle) {
+                    Write-Output "Approving: $($update.Title) [$($update.UpdateClassificationTitle)]"
+                    $update.Approve("Install", $targetGroup) | Out-Null
+                    $approvedCount++
+                }
+            }
+            Write-Output "APPROVED_COUNT:$approvedCount"
+        } catch {
+            Write-Output "Could not execute WSUS approval. Check if WSUS Administration Console is installed on the target and if credentials allow access."
+            Write-Output "ERROR: $($_.Exception.Message)"
+        }
+      delegate_to: "{{ wsus_server_url | regex_replace('^http[s]?://([^:/]+).*', '\\1') }}"
+      run_once: true
+      register: wsus_approve_result
+      when: 
+        - wsus_is_configured | bool
+        - wsus_server_url | length > 0
+      ignore_errors: yes
+
+    - name: Display WSUS Approval Result
+      debug:
+        msg: "{{ wsus_approve_result.stdout_lines | default(['WSUS Approval skipped or failed.']) }}"
+      run_once: true
+      when: wsus_approve_result is defined
+
     - name: Check Windows Update service status
       win_shell: |
         $service = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
