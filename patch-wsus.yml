@@ -292,7 +292,7 @@
         $wsus = Get-WsusServer
         $status = $wsus.GetStatus()
         
-        $needingFiles = $status.UpdatesNeedingFiles
+        $needingFiles = $status.UpdatesNeedingFilesCount
         $totalMB     = [math]::Round($status.TotalBytesToDownload / 1MB, 2)
         $downloadedMB = [math]::Round($status.TotalBytesDownloaded / 1MB, 2)
         
