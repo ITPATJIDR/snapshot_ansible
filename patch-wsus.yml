@@ -292,11 +292,14 @@
         $wsus = Get-WsusServer
         $status = $wsus.GetStatus()
         
-        $toDownload = $status.UpdatesToDownload
-        $downloaded = $status.UpdatesDownloaded
+        $needingFiles = $status.UpdatesNeedingFiles
+        $totalMB     = [math]::Round($status.TotalBytesToDownload / 1MB, 2)
+        $downloadedMB = [math]::Round($status.TotalBytesDownloaded / 1MB, 2)
         
-        if ($toDownload -gt 0 -and $downloaded -lt $toDownload) {
-            Write-Output "Downloading: $downloaded / $toDownload updates..."
+        Write-Output "Updates needing files : $needingFiles"
+        Write-Output "Downloaded            : $downloadedMB MB / $totalMB MB"
+        
+        if ($needingFiles -gt 0) {
             exit 1
         }
         
