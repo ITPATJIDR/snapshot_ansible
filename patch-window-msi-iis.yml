@@ -18,10 +18,10 @@
       ansible.builtin.debug:
         msg: "KB5074975 status before patching: {{ pre_install_check.stdout | trim }}"
 
-    # 1. Stop Service Apache
-    - name: Stop Service Apache before patching
+    # 1. Stop Service IIS
+    - name: Stop Service IIS before patching
       ansible.windows.win_service:
-        name: "Apache2.4" # กรุณาตรวจสอบชื่อ Service อีกครั้ง (อาจเป็น Apache, Apache2.4 ฯลฯ)
+        name: "W3SVC" # W3SVC คือ World Wide Web Publishing Service ของ IIS
         state: stopped
       when: "'Not Installed' in pre_install_check.stdout"
       ignore_errors: true
@@ -71,50 +71,12 @@
       ansible.builtin.debug:
         msg: "KB5074975 status after patching: {{ post_install_check.stdout | trim }}"
 
-    # 4. Start Service Apache ,MySQL
-    - name: Start Service Apache and MySQL
+    # 4. Check Service IIS is running
+    - name: Check Service IIS status
       ansible.windows.win_service:
-        name: "{{ item }}"
-        state: started
-      loop:
-        - "Apache2.4" # กรุณาตรวจสอบชื่อ Service อีกครั้ง
-        - "MySQL"     # กรุณาตรวจสอบชื่อ Service อีกครั้ง
-      ignore_errors: true
+        name: "W3SVC"
+      register: iis_service_status
 
-    # 5. Check Service Apache ,Mysql
-    - name: Check Service Apache and MySQL status
-      ansible.windows.win_service:
-        name: "{{ item }}"
-      loop:
-        - "Apache2.4"
-        - "MySQL"
-      register: service_status
-
-    - name: Display Service Status
+    - name: Display IIS Service Status
       ansible.builtin.debug:
-        msg: "Service {{ item.item }} is currently {{ item.state }}"
-      loop: "{{ service_status.results }}"
-
-    # 6. test Open web https://iam-uat.exim.go.th/
-    - name: Test Open Web iam-uat.exim.go.th
-      ansible.windows.win_uri:
-        url: https://iam-uat.exim.go.th/
-        method: GET
-        validate_certs: no
-        return_content: yes
-      register: web_test
-      ignore_errors: true
-
-    - name: Display Web Test Status
-      ansible.builtin.debug:
-        msg: "Web Access {{ 'SUCCEEDED' if web_test.status_code == 200 else 'FAILED' }} (Status Code: {{ web_test.status_code | default('N/A') }})"
-
-    # 7. Run .bat Start Service D:\PJ_iAM\Code_iAM\iAM.bat
-    - name: Run iAM.bat to Start Service
-      ansible.windows.win_command: D:\PJ_iAM\Code_iAM\iAM.bat
-      register: iambat_result
-      ignore_errors: true
-
-    - name: Display iAM.bat Execution Status
-      ansible.builtin.debug:
-        msg: "iAM.bat execution finished with return code {{ iambat_result.rc | default('N/A') }}"
+        msg: "Service W3SVC (IIS) is currently {{ iis_service_status.state }}"
