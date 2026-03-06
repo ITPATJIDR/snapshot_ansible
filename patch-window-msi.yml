@@ -78,7 +78,7 @@
         state: started
       loop:
         - "Apache2.4" # กรุณาตรวจสอบชื่อ Service อีกครั้ง
-        - "MySQL"     # กรุณาตรวจสอบชื่อ Service อีกครั้ง
+        - "MySQL80"     # กรุณาตรวจสอบชื่อ Service อีกครั้ง
       ignore_errors: true
 
     # 5. Check Service Apache ,Mysql

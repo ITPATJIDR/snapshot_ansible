@@ -1,0 +1,25 @@
+---
+- name: Simple WSUS Service Check
+  hosts: localhost
+  gather_facts: false
+  vars:
+    wsus_server: "http://10.0.6.62:8530"
+
+  tasks:
+    - name: Test connection to WSUS Server
+      ansible.builtin.uri:
+        url: "{{ wsus_server }}/ClientWebService/client.asmx"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: wsus_status
+      ignore_errors: true
+
+    - name: Show WSUS Status
+      ansible.builtin.debug:
+        msg: >
+          {% if wsus_status.status == 200 %}
+          ✅ WSUS Server is UP and reachable!
+          {% else %}
+          ❌ WSUS Server is DOWN or unreachable! (Status code: {{ wsus_status.status | default('Timeout/Error') }})
+          {% endif %}

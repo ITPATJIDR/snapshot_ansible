@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: yes
   vars:
-    wsus_server: "http://192.168.101.55:8530"
+    wsus_server: "http://10.0.6.62:8530"
     update_categories: ["SecurityUpdates"]
     install_updates: true
   # wsus_server can be set in AWX as an extra variable
