@@ -41,6 +41,7 @@
 
         - name: Reboot Windows System if required by the patch
           ansible.windows.win_reboot:
+            reboot_timeout: 18000
           when: dism_result.rc == 3010
 
         - name: Clean up downloaded MSU file
