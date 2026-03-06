@@ -1,0 +1,65 @@
+---
+- name: Patch Windows with stand-alone MSU file
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Verify patch before installation (Pre-Install Check)
+      ansible.windows.win_shell: |
+        Try {
+            $hotfix = Get-HotFix -Id KB5074975 -ErrorAction Stop
+            Write-Output "Installed"
+        } Catch {
+            Write-Output "Not Installed"
+        }
+      register: pre_install_check
+      changed_when: false
+
+    - name: Display Pre-Install Check Result
+      ansible.builtin.debug:
+        msg: "KB5074975 status before patching: {{ pre_install_check.stdout | trim }}"
+
+    - name: Download and Install Patch if not installed
+      when: "'Not Installed' in pre_install_check.stdout"
+      block:
+        - name: Ensure temp directory exists for patch download
+          ansible.windows.win_file:
+            path: C:\PatchTemp
+            state: directory
+
+        - name: Download KB5074975 MSU file
+          ansible.windows.win_get_url:
+            url: https://catalog.s.download.windowsupdate.com/c/msdownload/update/software/updt/2025/12/windows10.0-kb5074975-x64_acfdfe5d5ea12c7ec55ca3cb48730c84748c6dbe.msu
+            dest: C:\PatchTemp\KB5074975.msu
+
+        - name: Apply patch silently (Silent Install)
+          ansible.windows.win_hotfix:
+            hotfix_kb: KB5074975
+            source: C:\PatchTemp\KB5074975.msu
+            state: present
+          register: install_result
+
+        - name: Reboot Windows System if required by the patch
+          ansible.windows.win_reboot:
+          when: install_result.reboot_required | default(false)
+
+        - name: Clean up downloaded MSU file
+          ansible.windows.win_file:
+            path: C:\PatchTemp\KB5074975.msu
+            state: absent
+
+    - name: Verify patch after installation (Post-Install Check)
+      ansible.windows.win_shell: |
+        Try {
+            $hotfix = Get-HotFix -Id KB5074975 -ErrorAction Stop
+            Write-Output "Installed"
+        } Catch {
+            Write-Output "Not Installed"
+            exit 1
+        }
+      register: post_install_check
+      changed_when: false
+      failed_when: "'Not Installed' in post_install_check.stdout"
+
+    - name: Display Post-Install Check Result
+      ansible.builtin.debug:
+        msg: "KB5074975 status after patching: {{ post_install_check.stdout | trim }}"
