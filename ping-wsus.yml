@@ -3,7 +3,7 @@
   hosts: localhost
   gather_facts: false
   vars:
-    wsus_server: "http://10.0.6.62:8530"
+    wsus_server: "https://10.0.6.62:8531"
 
   tasks:
     - name: Test connection to WSUS Server
