@@ -31,16 +31,17 @@
             url: https://catalog.s.download.windowsupdate.com/c/msdownload/update/software/updt/2025/12/windows10.0-kb5074975-x64_acfdfe5d5ea12c7ec55ca3cb48730c84748c6dbe.msu
             dest: C:\PatchTemp\KB5074975.msu
 
-        - name: Apply patch silently (Silent Install)
-          ansible.windows.win_hotfix:
-            hotfix_kb: KB5074975
-            source: C:\PatchTemp\KB5074975.msu
-            state: present
-          register: install_result
+        - name: Apply patch silently using DISM (Alternative to win_hotfix)
+          ansible.windows.win_command: dism.exe /Online /Add-Package /PackagePath:"C:\PatchTemp\KB5074975.msu" /Quiet /NoRestart
+          register: dism_result
+          failed_when: dism_result.rc not in [0, 3010]
+          changed_when: dism_result.rc in [0, 3010]
+          async: 3600
+          poll: 30
 
         - name: Reboot Windows System if required by the patch
           ansible.windows.win_reboot:
-          when: install_result.reboot_required | default(false)
+          when: dism_result.rc == 3010
 
         - name: Clean up downloaded MSU file
           ansible.windows.win_file:
