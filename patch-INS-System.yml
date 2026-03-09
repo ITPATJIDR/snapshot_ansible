@@ -1,0 +1,136 @@
+---
+- name: Patch Windows (Supports MSU and WSUS methods for IIS)
+  hosts: all
+  gather_facts: false
+  vars:
+    #target_kb_id: "KB5074975"
+    #target_msu_path: "C:\\PatchTemp\\KB5074975.msu"
+    #patch_method: 'msu' 
+
+  tasks:
+    # ==========================================
+    # Patch Method 1: MSU File (Default)
+    # File is placed at C:\PatchTemp\KB5074975.msu
+    # ==========================================
+    - name: Executing Patch via stand-alone MSU file
+      when: patch_method == 'msu'
+      block:
+        - name: Verify patch before installation (Pre-Install Check)
+          ansible.windows.win_shell: |
+            Try {
+                $hotfix = Get-HotFix -Id {{ target_kb_id }} -ErrorAction Stop
+                Write-Output "Installed"
+            } Catch {
+                Write-Output "Not Installed"
+            }
+          register: pre_install_check
+          changed_when: false
+
+        - name: Display Pre-Install Check Result
+          ansible.builtin.debug:
+            msg: "{{ target_kb_id }} status before patching: {{ pre_install_check.stdout | trim }}"
+
+        # Only proceed if the patch is not installed
+        - name: Apply Patch MSU
+          when: "'Not Installed' in pre_install_check.stdout"
+          block:
+            # 1. Stop Service IIS
+            - name: Stop Service IIS before patching
+              ansible.windows.win_service:
+                name: "W3SVC" # W3SVC คือ World Wide Web Publishing Service ของ IIS
+                state: stopped
+              ignore_errors: true
+
+            # 2. Apply patch silently using DISM
+            - name: Apply patch silently using DISM
+              ansible.windows.win_command: dism.exe /Online /Add-Package /PackagePath:"{{ target_msu_path }}" /Quiet /NoRestart
+              register: dism_result
+              failed_when: dism_result.rc not in [0, 3010]
+              changed_when: dism_result.rc in [0, 3010]
+              async: 3600
+              poll: 30
+
+            # 3. Restart Server
+            - name: Reboot Windows System if required by the patch
+              ansible.windows.win_reboot:
+                reboot_timeout: 18000
+              when: dism_result.rc == 3010
+
+        # Post-Installation Check for MSU
+        - name: Verify patch after installation (Post-Install Check)
+          ansible.windows.win_shell: |
+            Try {
+                $hotfix = Get-HotFix -Id {{ target_kb_id }} -ErrorAction Stop
+                Write-Output "Installed"
+            } Catch {
+                Write-Output "Not Installed"
+                exit 1
+            }
+          register: post_install_check
+          changed_when: false
+          failed_when: "'Not Installed' in post_install_check.stdout"
+
+        - name: Display Post-Install Check Result
+          ansible.builtin.debug:
+            msg: "{{ target_kb_id }} status after patching: {{ post_install_check.stdout | trim }}"
+
+
+    # ==========================================
+    # Patch Method 2: WSUS (Select first ID and install)
+    # ==========================================
+    - name: Executing Patch via WSUS
+      when: patch_method == 'wsus'
+      block:
+        - name: Search for available updates from WSUS
+          ansible.windows.win_updates:
+            state: searched
+          register: wsus_search
+
+        - name: Set first update ID fact
+          ansible.builtin.set_fact:
+            first_update_id: "{{ wsus_search.updates[0].id }}"
+          when: wsus_search.updates is defined and wsus_search.updates | length > 0
+
+        # Only proceed to stop services and install if updates are found
+        - name: Install WSUS Update
+          when: first_update_id is defined
+          block:
+            # 1. Stop Service IIS
+            - name: Stop Service IIS before patching
+              ansible.windows.win_service:
+                name: "W3SVC"
+                state: stopped
+              ignore_errors: true
+              
+            # 2. Install the update
+            - name: Install the first available update from WSUS
+              ansible.windows.win_updates:
+                state: installed
+                accept_list:
+                  - "{{ first_update_id }}"
+              register: wsus_install
+
+            # 3. Restart Server
+            - name: Reboot Windows System if required by WSUS update
+              ansible.windows.win_reboot:
+                reboot_timeout: 18000
+              when: wsus_install.reboot_required | default(false)
+
+        - name: Display WSUS Install Status
+          ansible.builtin.debug:
+            msg: "WSUS update {{ 'found and installed ' + first_update_id if first_update_id is defined else 'not found. No updates required.' }}"
+
+    # ==========================================
+    # Shared Post Tasks (Starts services and validations)
+    # ==========================================
+    - name: Shared Post Tasks Implementation
+      block:
+        # 4. Check Service IIS is running
+        - name: Check Service IIS status
+          ansible.windows.win_service:
+            name: "W3SVC"
+          register: iis_service_status
+
+        - name: Display IIS Service Status
+          ansible.builtin.debug:
+            msg: "Service W3SVC (IIS) is currently {{ iis_service_status.state }}"
