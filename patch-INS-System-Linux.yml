@@ -4,10 +4,10 @@
   gather_facts: yes
   become: yes
   vars:
-    jboss_home: "/data/EAP-7.2.0"
-    jboss_bin: "{{ jboss_home }}/bin"
-    login_url: "https://coreinsuat.exim.go.th:8080/coreins/LoginForm.jsp"
-    patch_report_dir: "./patch-report"
+    #jboss_home: "/data/EAP-7.2.0"
+    #jboss_bin: "{{ jboss_home }}/bin"
+    #login_url: "https://coreinsuat.exim.go.th:8080/coreins/LoginForm.jsp"
+    #patch_report_dir: "./patch-report"
   
   tasks:
     # ========================================
@@ -79,7 +79,7 @@
     # Step 3: Apply Patch (RPM Update)
     # ========================================
     - name: Step 3 - Check for available JBoss updates
-      shell: yum list updates | grep -i 'eap7\|jboss'
+      shell: yum list updates 
       register: jboss_updates_check
       ignore_errors: yes
       changed_when: false

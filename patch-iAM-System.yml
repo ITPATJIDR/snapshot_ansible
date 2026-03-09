@@ -79,7 +79,7 @@
 
 
     # ==========================================
-    # Patch Method 2: WSUS (Select first ID and install)
+    # Patch Method 2: WSUS (Install specific ID or select first ID)
     # ==========================================
     - name: Executing Patch via WSUS
       when: patch_method == 'wsus'
@@ -89,14 +89,17 @@
             state: searched
           register: wsus_search
 
-        - name: Set first update ID fact
+        - name: Set target update ID fact
           ansible.builtin.set_fact:
-            first_update_id: "{{ wsus_search.updates[0].id }}"
-          when: wsus_search.updates is defined and wsus_search.updates | length > 0
+            # ใช้ target_wsus_id ดึงจากตัวแปร ถ้าไม่มี (ค่าว่างหรือไม่ได้ส่งมา) ให้เอา ID ตัวแรกจากที่เทสได้
+            update_id_to_install: "{{ target_wsus_id | default('', true) | ternary(target_wsus_id | default(''), wsus_search.updates[0].id) }}"
+          when: 
+            - wsus_search.updates is defined 
+            - wsus_search.updates | length > 0 or target_wsus_id | default('', true) != ''
 
-        # Only proceed to stop services and install if updates are found
+        # Only proceed to stop services and install if an update ID is determined
         - name: Install WSUS Update
-          when: first_update_id is defined
+          when: update_id_to_install is defined
           block:
             # 1. Stop Service Apache and MySQL
             - name: Stop Service Apache and MySQL before patching
@@ -109,11 +112,11 @@
               ignore_errors: true
               
             # 2. Install the update
-            - name: Install the first available update from WSUS
+            - name: Install the specified update from WSUS
               ansible.windows.win_updates:
                 state: installed
                 accept_list:
-                  - "{{ first_update_id }}"
+                  - "{{ update_id_to_install }}"
               register: wsus_install
 
             # 3. Restart Server
@@ -124,7 +127,7 @@
 
         - name: Display WSUS Install Status
           ansible.builtin.debug:
-            msg: "WSUS update {{ 'found and installed ' + first_update_id if first_update_id is defined else 'not found. No updates required.' }}"
+            msg: "WSUS update {{ 'installed ' + update_id_to_install if update_id_to_install is defined else 'not found. No updates required.' }}"
 
     # ==========================================
     # Shared Post Tasks (Starts services and validations)
