@@ -93,25 +93,15 @@
       tags:
         - apply-patch
     
-    - name: Determine the first available JBoss patch package
-      set_fact:
-        first_jboss_patch: "{{ jboss_updates_check.stdout_lines[0].split()[0] }}"
-      when: 
-        - jboss_updates_check.rc == 0
-        - jboss_updates_check.stdout_lines | length > 0
-      tags:
-        - apply-patch
-
-    - name: Apply ONLY the first JBoss patch via yum update
+    - name: Apply ONLY security updates via yum
       yum:
-        name: "{{ first_jboss_patch }}"
+        name: '*'
+        security: yes
         state: latest
         update_cache: yes
       register: yum_update_result
       when: 
         - jboss_updates_check.rc == 0
-        - jboss_updates_check.stdout_lines | length > 0
-        - first_jboss_patch is defined
       tags:
         - apply-patch
     
