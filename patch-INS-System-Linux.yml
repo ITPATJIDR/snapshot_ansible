@@ -197,13 +197,8 @@
     # ========================================
     # Step 7: Test Login URL
     # ========================================
-    - name: Step 7 - Test login URL accessibility
-      uri:
-        url: "{{ login_url }}"
-        method: GET
-        validate_certs: no
-        status_code: [200, 302]
-        timeout: 30
+    - name: Step 7 - Test login URL accessibility with curl
+      shell: curl -s -o /dev/null -w "%{http_code}" -k "{{ login_url }}"
       register: login_test
       ignore_errors: yes
       delegate_to: localhost
@@ -212,7 +207,7 @@
     
     - name: Display login test result
       debug:
-        msg: "{{ 'Login page is accessible' if login_test.status in [200, 302] else 'Warning: Login page may not be accessible yet' }}"
+        msg: "{{ 'Login page is accessible' if login_test.stdout | default('000') in ['200', '302'] else 'Warning: Login page may not be accessible yet' }}"
       tags:
         - test-login
     
@@ -239,7 +234,7 @@
           - "Patch Applied: {{ 'Yes' if (yum_update_result is changed) else 'No' }}"
           - "Service Restarted: {{ 'Yes' if (systemctl_restart is changed or domain_start is changed) else 'No' }}"
           - "Post-Patch Running: {{ 'Yes' if jboss_is_running else 'No' }}"
-          - "Login URL Test: {{ login_test.status | default('N/A') }}"
+          - "Login URL Test: {{ login_test.stdout | default('N/A') }}"
           - "Login URL: {{ login_url }}"
           - "=========================================="
     
@@ -273,9 +268,9 @@
               "jboss_running": {{ jboss_is_running | to_json }},
               "running_processes": {{ jboss_running_count.stdout | int }},
               "login_url": "{{ login_url }}",
-              "login_status": "{{ login_test.status | default('N/A') }}"
+              "login_status": "{{ login_test.stdout | default('N/A') }}"
             },
-            "status": "{{ 'Success' if (jboss_is_running and (login_test.status | default(0) in [200, 302])) else 'Partial Success' }}"
+            "status": "{{ 'Success' if (jboss_is_running and (login_test.stdout | default('000') in ['200', '302'])) else 'Partial Success' }}"
           }
         dest: "{{ patch_report_dir }}/jboss-patch-{{ inventory_hostname }}-{{ patch_date | regex_replace('-', '') }}-{{ patch_time | regex_replace(':', '') }}.json"
       delegate_to: localhost
