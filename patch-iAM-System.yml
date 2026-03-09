@@ -44,20 +44,18 @@
                 - "MySQL80"
               ignore_errors: true
 
-            # 2. Apply patch silently using DISM
-            - name: Apply patch silently using DISM
-              ansible.windows.win_command: dism.exe /Online /Add-Package /PackagePath:"{{ target_msu_path }}" /Quiet /NoRestart
-              register: dism_result
-              failed_when: dism_result.rc not in [0, 3010]
-              changed_when: dism_result.rc in [0, 3010]
-              async: 3600
-              poll: 30
+            # 2. Apply patch using win_hotfix
+            - name: Apply patch using win_hotfix
+              ansible.windows.win_hotfix:
+                source: "{{ target_msu_path }}"
+                state: present
+              register: hotfix_result
 
             # 3. Restart Server
             - name: Reboot Windows System if required by the patch
               ansible.windows.win_reboot:
                 reboot_timeout: 18000
-              when: dism_result.rc == 3010
+              when: hotfix_result.reboot_required | default(false)
 
         # Post-Installation Check for MSU
         - name: Verify patch after installation (Post-Install Check)
