@@ -84,17 +84,23 @@
             state: searched
           register: wsus_search
 
-        - name: Set target update ID fact
+        - name: Set target update list fact
           ansible.builtin.set_fact:
-            # ใช้ target_wsus_id ดึงจากตัวแปร ถ้าไม่มี (ค่าว่างหรือไม่ได้ส่งมา) ให้เอา ID ตัวแรกจากที่เทสได้
-            update_id_to_install: "{{ target_wsus_id | default('', true) | ternary(target_wsus_id | default(''), wsus_search.updates[0].id) }}"
-          when: 
-            - wsus_search.updates is defined 
-            - wsus_search.updates | length > 0 or target_wsus_id | default('', true) != ''
+            # รองรับการส่งค่าหลายตัวผ่าน comma เช่น KB5074975,KB5074976 โดยดึงจาก target_kb_id หรือ target_wsus_id
+            updates_to_install: >-
+              {%- if target_kb_id | default('', true) != '' -%}
+              {{ target_kb_id.split(',') | map('trim') | list }}
+              {%- elif target_wsus_id | default('', true) != '' -%}
+              {{ target_wsus_id.split(',') | map('trim') | list }}
+              {%- elif wsus_search.updates is defined and wsus_search.updates | length > 0 -%}
+              [ "{{ wsus_search.updates[0].id }}" ]
+              {%- else -%}
+              []
+              {%- endif -%}
 
         # Only proceed to stop services and install if an update ID is determined
         - name: Install WSUS Update
-          when: update_id_to_install is defined
+          when: updates_to_install | length > 0
           block:
             # 1. Stop Service IIS
             - name: Stop Service IIS before patching
@@ -104,11 +110,10 @@
               ignore_errors: true
               
             # 2. Install the update
-            - name: Install the specified update from WSUS
+            - name: Install the specified updates from WSUS
               ansible.windows.win_updates:
                 state: installed
-                accept_list:
-                  - "{{ update_id_to_install }}"
+                accept_list: "{{ updates_to_install }}"
               register: wsus_install
 
             # 3. Restart Server
@@ -119,7 +124,7 @@
 
         - name: Display WSUS Install Status
           ansible.builtin.debug:
-            msg: "WSUS update {{ 'installed ' + update_id_to_install if update_id_to_install is defined else 'not found. No updates required.' }}"
+            msg: "WSUS updates {{ 'installed: ' + (updates_to_install | join(', ')) if updates_to_install | length > 0 else 'not found. No updates required.' }}"
 
     # ==========================================
     # Shared Post Tasks (Starts services and validations)
