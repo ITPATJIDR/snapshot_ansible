@@ -3,118 +3,123 @@
   hosts: all
   gather_facts: no
   vars:
-    sccm_site_code: "SRS"
-    adr_name: "patch dotnet" 
-    wait_timeout_seconds: 1800
+      sccm_site_code: "SRS"
+      adr_name: "patch dotnet"
+      wait_timeout_seconds: 1800
 
   tasks:
-    - name: Trigger ADR and wait for completion
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = "Stop"
-        
-        # Variables from Ansible
-        $SiteCode = "{{ sccm_site_code }}"
-        $ADRName = "{{ adr_name }}"
-        $TimeoutSeconds = {{ wait_timeout_seconds | default(1800) }}
+      - name: Trigger ADR and wait for completion
+        ansible.windows.win_shell: |
+            $ErrorActionPreference = "Stop"
 
-        # 1. Load Configuration Manager Module
-        if (-not (Get-Module -Name ConfigurationManager)) {
-            try {
-                Import-Module ConfigurationManager -ErrorAction Stop
-            }
-            catch {
-                # Try locating via Registry
-                $setupKeyPath = "HKLM:\SOFTWARE\Microsoft\SMS\Setup"
-                $valName = "UI Installation Directory"
-                $sccmSetupKey = Get-ItemProperty -Path $setupKeyPath -Name $valName -ErrorAction SilentlyContinue
-                
-                if ($sccmSetupKey) {
-                    # Access property with spaces safely
-                    $installDir = $sccmSetupKey."$valName"
-                    $modulePath = Join-Path $installDir "bin\ConfigurationManager.psd1"
+            # Variables from Ansible
+            $SiteCode = "{{ sccm_site_code }}"
+            $ADRName = "{{ adr_name }}"
+            $TimeoutSeconds = {{ wait_timeout_seconds | default(1800) }}
+
+            # 1. Load Configuration Manager Module
+            if (-not (Get-Module -Name ConfigurationManager)) {
+                try {
+                    Import-Module ConfigurationManager -ErrorAction Stop
+                }
+                catch {
+                    # Try locating via Registry
+                    $setupKeyPath = "HKLM:\SOFTWARE\Microsoft\SMS\Setup"
+                    $valName = "UI Installation Directory"
+                    $sccmSetupKey = Get-ItemProperty -Path $setupKeyPath -Name $valName -ErrorAction SilentlyContinue
                     
-                    if (Test-Path $modulePath) {
-                        Import-Module $modulePath -ErrorAction Stop
+                    if ($sccmSetupKey) {
+                        # Access property with spaces safely
+                        $installDir = $sccmSetupKey."$valName"
+                        $modulePath = Join-Path $installDir "bin\ConfigurationManager.psd1"
+                        
+                        if (Test-Path $modulePath) {
+                            Import-Module $modulePath -ErrorAction Stop
+                        } else {
+                            throw "ConfigurationManager module not found at: $modulePath"
+                        }
                     } else {
-                        throw "ConfigurationManager module not found at: $modulePath"
+                        throw "Could not find SCCM Installation Directory in Registry."
                     }
-                } else {
-                    throw "Could not find SCCM Installation Directory in Registry."
                 }
             }
-        }
 
-        # 2. Set Location to Site Drive
-        if (-not (Get-PSProvider -PSProvider CMSite -ErrorAction SilentlyContinue)) {
-            throw "CMSite Provider not found. Module might not be loaded correctly."
-        }
-        
-        Set-Location "$($SiteCode):"
-
-        # 3. Get Initial State
-        $InitialADR = Get-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
-        if (-not $InitialADR) {
-            throw "ADR '$ADRName' not found on site $SiteCode."
-        }
-        
-        $InitialRunTime = $InitialADR.LastRunTime
-        Write-Output "Initial LastRunTime: $InitialRunTime"
-
-        # 4. Invoke ADR
-        Write-Output "Invoking ADR: $ADRName"
-        Invoke-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
-
-        # 5. Wait for completion
-        $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $Completed = $false
-
-        Write-Output "Waiting for ADR to update LastRunTime..."
-
-        while ($StopWatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
-            Start-Sleep -Seconds 10
-            
-            $CurrentADR = Get-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
-            
-            if ($CurrentADR.LastRunTime -gt $InitialRunTime) {
-                Write-Output "ADR Finished successfully."
-                Write-Output "Old Time: $InitialRunTime"
-                Write-Output "New Time: $($CurrentADR.LastRunTime)"
-                Write-Output "Exit Code: $($CurrentADR.LastErrorCode)"
-                $Completed = $true
-                break
+            # 2. Set Location to Site Drive
+            if (-not (Get-PSProvider -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+                throw "CMSite Provider not found. Module might not be loaded correctly."
             }
-        }
-        
-        $StopWatch.Stop()
 
-        if (-not $Completed) {
-            throw "Timeout waiting for ADR '$ADRName' to complete after $TimeoutSeconds seconds."
-        }
-      register: adr_result
+            Set-Location "$($SiteCode):"
 
-    - name: Display Result
-      debug:
-        var: adr_result.stdout_lines
+            # 3. Get Initial State
+            $InitialADR = Get-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
+            if (-not $InitialADR) {
+                throw "ADR '$ADRName' not found on site $SiteCode."
+            }
 
-    - name: Verify IIS is responding after patching
-      win_shell: |
-        $url = "http://localhost"
-        try {
-            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
-            if ($response.StatusCode -eq 200) {
-                Write-Output "SUCCESS: IIS is up and running (Status 200)"
-                exit 0
-            } else {
-                Write-Output "WARNING: IIS responded with Status $($response.StatusCode)"
+            $InitialRunTime = $InitialADR.LastRunTime
+            Write-Output "Initial LastRunTime: $InitialRunTime"
+
+            # 4. Invoke ADR
+            Write-Output "Invoking ADR: $ADRName"
+            Invoke-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
+
+            # 5. Wait for completion
+            $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $Completed = $false
+
+            Write-Output "Waiting for ADR to update LastRunTime..."
+
+            while ($StopWatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+                Start-Sleep -Seconds 10
+                
+                $CurrentADR = Get-CMSoftwareUpdateAutoDeploymentRule -Name $ADRName
+                
+                if ($CurrentADR.LastRunTime -gt $InitialRunTime) {
+                    Write-Output "ADR Finished successfully."
+                    Write-Output "Old Time: $InitialRunTime"
+                    Write-Output "New Time: $($CurrentADR.LastRunTime)"
+                    Write-Output "Exit Code: $($CurrentADR.LastErrorCode)"
+                    $Completed = $true
+                    break
+                }
+            }
+
+            $StopWatch.Stop()
+
+            if (-not $Completed) {
+                throw "Timeout waiting for ADR '$ADRName' to complete after $TimeoutSeconds seconds."
+            }
+        register: adr_result
+
+      - name: Display Result
+        debug:
+            var: adr_result.stdout_lines
+
+      - name: Verify IIS is responding after patching
+        win_shell: |
+            $url = "http://localhost"
+            try {
+                $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
+                if ($response.StatusCode -eq 200) {
+                    Write-Output "SUCCESS: IIS is up and running (Status 200)"
+                    exit 0
+                } else {
+                    Write-Output "WARNING: IIS responded with Status $($response.StatusCode)"
+                    exit 1
+                }
+            } catch {
+                Write-Output "ERROR: Failed to connect to IIS at $url. Error: $($_.Exception.Message)"
                 exit 1
             }
-        } catch {
-            Write-Output "ERROR: Failed to connect to IIS at $url. Error: $($_.Exception.Message)"
-            exit 1
-        }
-      register: iis_check
-      ignore_errors: yes
+        register: iis_check
+        ignore_errors: yes
 
-    - name: Display IIS Status
-      debug:
-        msg: "{{ iis_check.stdout }}"
+      - name: Pass IIS status to next job in AWX workflow
+        set_stats:
+            data:
+                iis_status: "{{ iis_check.stdout }}"
+
+      - name: Display IIS Status
+        debug:
+            msg: "{{ iis_check.stdout }}"
