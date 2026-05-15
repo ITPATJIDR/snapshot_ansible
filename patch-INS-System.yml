@@ -6,6 +6,8 @@
     #target_kb_id: "KB5074975"
     #target_msu_path: "C:\\PatchTemp\\KB5074975.msu"
     #patch_method: 'msu' 
+    #wsus_server_ip: "10.0.6.62"
+    #wsus_computer_group: "All Computers"
 
   tasks:
     # ==========================================
@@ -79,7 +81,80 @@
     - name: Executing Patch via WSUS
       when: patch_method == 'wsus'
       block:
-        - name: Search for available updates from WSUS
+        # ---------------------------------------------------------
+        # [NEW] WSUS Server Auto-Approval & Download Wait
+        # ---------------------------------------------------------
+        - name: Manage WSUS Approval and Download (Only if target KBs are specified)
+          when: target_kb_id | default('', true) != ''
+          delegate_to: "{{ wsus_server_ip }}" # IP ของ WSUS Server
+          run_once: true         # ทำแค่ครั้งเดียวพอ ไม่ยิงครบทุกเครื่อง
+          block:
+            - name: Auto-Approve target KBs on WSUS Server
+              ansible.windows.win_shell: |
+                Import-Module UpdateServices -ErrorAction Stop
+                $wsus = Get-WsusServer
+                $groupName = "{{ wsus_computer_group | default('All Computers') }}"
+                $targetGroup = $wsus.GetComputerTargetGroups() | Where-Object { $_.Name -eq $groupName }
+                
+                if (-not $targetGroup) {
+                    Write-Output "ERROR: Target group '$groupName' not found on WSUS."
+                    exit 1
+                }
+
+                
+                # เอา KB ที่เป็น comma มาตัดคำและลบคำว่า KB ออกเพื่อให้ SearchUpdates หาง่ายขึ้น
+                $kbString = "{{ target_kb_id }}"
+                $kbList = $kbString.Split(',') | ForEach-Object { $_.Trim().ToUpper().Replace('KB', '') }
+                
+                foreach ($kb in $kbList) {
+                    if (-not [string]::IsNullOrWhiteSpace($kb)) {
+                        Write-Output "Searching WSUS for KB$kb..."
+                        # หา Update ที่เนื้อหามีเลข KB นี้
+                        $updates = $wsus.SearchUpdates($kb)
+                        foreach ($update in $updates) {
+                            if (-not $update.IsDeclined) {
+                                Write-Output "Approving: $($update.Title)"
+                                if ($update.RequiresLicenseAgreementAcceptance) {
+                                    $update.AcceptLicenseAgreement()
+                                }
+                                $update.Approve("Install", $targetGroup) | Out-Null
+                            }
+                        }
+                    }
+                }
+              register: wsus_approval_output
+
+            - name: Display WSUS Approval Result
+              ansible.builtin.debug:
+                msg: "{{ wsus_approval_output.stdout_lines }}"
+
+            - name: Wait for WSUS to finish downloading the approved updates
+              ansible.windows.win_shell: |
+                Import-Module UpdateServices -ErrorAction Stop
+                $wsus = Get-WsusServer
+                $status = $wsus.GetStatus()
+                
+                $needingFiles = $status.UpdatesNeedingFilesCount
+                $totalMB     = [math]::Round($status.TotalBytesToDownload / 1MB, 2)
+                $downloadedMB = [math]::Round($status.TotalBytesDownloaded / 1MB, 2)
+                
+                Write-Output "Updates needing files : $needingFiles"
+                Write-Output "Downloaded            : $downloadedMB MB / $totalMB MB"
+                
+                if ($needingFiles -gt 0) {
+                    exit 1
+                }
+                exit 0
+              register: wsus_download_status
+              until: wsus_download_status.rc == 0
+              retries: 120    # รอสูงสุด 120 x 30 วินาที = 1 ชั่วโมง
+              delay: 30       # เช็คสถานะการดาวน์โหลดบน WSUS ทุกๆ 30 วินาที
+              ignore_errors: true
+
+        # ---------------------------------------------------------
+        # Start Client Installation Process
+        # ---------------------------------------------------------
+        - name: Search for available updates from WSUS on Target Client
           ansible.windows.win_updates:
             state: searched
           register: wsus_search
