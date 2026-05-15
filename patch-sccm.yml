@@ -95,3 +95,26 @@
     - name: Display Result
       debug:
         var: adr_result.stdout_lines
+
+    - name: Verify IIS is responding after patching
+      win_shell: |
+        $url = "http://localhost"
+        try {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
+            if ($response.StatusCode -eq 200) {
+                Write-Output "SUCCESS: IIS is up and running (Status 200)"
+                exit 0
+            } else {
+                Write-Output "WARNING: IIS responded with Status $($response.StatusCode)"
+                exit 1
+            }
+        } catch {
+            Write-Output "ERROR: Failed to connect to IIS at $url. Error: $($_.Exception.Message)"
+            exit 1
+        }
+      register: iis_check
+      ignore_errors: yes
+
+    - name: Display IIS Status
+      debug:
+        msg: "{{ iis_check.stdout }}"
