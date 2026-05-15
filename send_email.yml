@@ -3,77 +3,49 @@
   hosts: localhost
   gather_facts: yes
   vars:
-    # ข้อมูลจากตัวแปรที่คุณระบุมา
+    # 1. ข้อมูลการเชื่อมต่อ (ดึงจากตัวแปรที่คุณส่งมา)
     smtp_host: "smtp.gmail.com"
     smtp_port: 587
-    smtp_username: "{{ email_username | default('ittipatjitrada@gmail.com') }}"
-    smtp_password: "{{ email_password | default('lsex hcfu pmaf stre') }}"
+    smtp_username: "{{ email_username }}"
+    smtp_password: "{{ email_password }}"
     email_from: "{{ smtp_username }}"
-    email_to: "{{ recipient_email | default('ittipatjitrada@gmail.com') }}"
-    email_subject: "🚀 {{ subject | default('Patching Completion Report') }}"
-
-    # --- ปรับแต่ง HTML Template ตรงนี้ ---
-    email_body: |
+    email_to: "{{ recipient_email }}"
+    email_subject: "🚀 {{ email_subject | default('Patching Report') }}"
+    # 2. เก็บโครงสร้าง HTML ไว้ที่นี่ (จะไม่โดนทับ)
+    # เราจะเอา {{ email_body }} ที่คุณส่งมา ไปใส่ไว้ในช่อง Task Description
+    html_template: |
       <html>
-        <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #333; line-height: 1.6; background-color: #f4f7f9; padding: 20px;">
+        <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #333; background-color: #f4f7f9; padding: 20px;">
           <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.1); border-top: 5px solid #0056b3;">
-            
-            <!-- Header -->
-            <div style="background-color: #0056b3; padding: 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: 1px;">System Maintenance Report</h1>
-              <p style="color: #e0e0e0; margin-top: 5px;">Automated Patching Service</p>
+            <div style="background-color: #0056b3; padding: 20px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 22px;">System Maintenance Report</h1>
             </div>
-
-            <!-- Content -->
             <div style="padding: 30px;">
-              <h2 style="color: #0056b3; font-size: 20px; border-bottom: 2px solid #f0f0f0; padding-bottom: 10px;">Execution Summary</h2>
               <p>เรียน ผู้ดูแลระบบ,</p>
-              <p>ระบบได้ดำเนินการติดตั้ง Patch ประจำงวดเสร็จสิ้นเรียบร้อยแล้ว โดยมีรายละเอียดสรุปดังนี้:</p>
-
-              <!-- Data Table -->
+              <p>ดำเนินการติดตั้ง Patch เสร็จสิ้นแล้ว โดยมีรายละเอียดดังนี้:</p>
               <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
                 <tr>
-                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold; width: 40%;">Task Description</td>
-                  <td style="padding: 12px; border: 1px solid #dee2e6;">{{ body | default('Patch Success From Patch Window Task') }}</td>
+                  <td style="padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Task Description</td>
+                  <td style="padding: 10px; border: 1px solid #dee2e6;">{{ email_body }}</td>
                 </tr>
                 <tr>
-                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Target Server(s)</td>
-                  <td style="padding: 12px; border: 1px solid #dee2e6; color: #0056b3; font-weight: bold;">{{ vm_names | default('N/A') }}</td>
+                  <td style="padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Target Server</td>
+                  <td style="padding: 10px; border: 1px solid #dee2e6; color: #0056b3; font-weight: bold;">{{ vm_names | default('N/A') }}</td>
                 </tr>
                 <tr>
-                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">WSUS Server</td>
-                  <td style="padding: 12px; border: 1px solid #dee2e6;">{{ wsus_server | default('Default') }}</td>
+                  <td style="padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">WSUS Server</td>
+                  <td style="padding: 10px; border: 1px solid #dee2e6;">{{ wsus_server | default('Default') }}</td>
                 </tr>
                 <tr>
-                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Backup Location</td>
-                  <td style="padding: 12px; border: 1px solid #dee2e6; font-family: monospace; font-size: 13px;">{{ backup_path | default('N/A') }}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Completion Time</td>
-                  <td style="padding: 12px; border: 1px solid #dee2e6;">{{ ansible_date_time.date }} {{ ansible_date_time.time }}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Status</td>
-                  <td style="padding: 12px; border: 1px solid #dee2e6;">
-                    <span style="background-color: #28a745; color: white; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold;">SUCCESS</span>
-                  </td>
+                  <td style="padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Backup Path</td>
+                  <td style="padding: 10px; border: 1px solid #dee2e6;">{{ backup_path | default('N/A') }}</td>
                 </tr>
               </table>
-
-              <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-left: 5px solid #ffc107; font-size: 14px; color: #856404;">
-                <strong>Note:</strong> ระบบอาจมีการ Reboot หลังจากขั้นตอนนี้ โปรดตรวจสอบการทำงานของ Service ต่างๆ อีกครั้ง
-              </div>
-            </div>
-
-            <!-- Footer -->
-            <div style="background: #f8f9fa; padding: 20px; text-align: center; border-top: 1px solid #eeeeee; font-size: 12px; color: #777;">
-              <p>This is an automated message, please do not reply directly to this email.</p>
-              <p>&copy; 2026 Your Company Automation Service. All rights reserved.</p>
+              <p style="margin-top: 20px; font-size: 12px; color: #777;">รายงานฉบับนี้สร้างขึ้นโดยอัตโนมัติเมื่อวันที่ {{ ansible_date_time.date }}</p>
             </div>
           </div>
         </body>
       </html>
-
   tasks:
     - name: Send Professional HTML Email
       ansible.builtin.shell: |
@@ -82,7 +54,7 @@
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
 
-        # Email configuration
+        # ดึงค่าจากตัวแปร Ansible
         smtp_host = "{{ smtp_host }}"
         smtp_port = {{ smtp_port }}
         username = "{{ smtp_username }}"
@@ -91,17 +63,16 @@
         to_addr = "{{ email_to }}"
         subject = "{{ email_subject }}"
 
-        # HTML Content
-        html_body = """{{ email_body }}"""
+        # ใช้ html_template ที่เราเตรียมไว้
+        html_content = """{{ html_template }}"""
 
-        # Create message container
         msg = MIMEMultipart('alternative')
         msg['From'] = from_addr
         msg['To'] = to_addr
         msg['Subject'] = subject
 
-        # Attach HTML content (เปลี่ยนเป็น 'html')
-        msg.attach(MIMEText(html_body, 'html'))
+        # ส่งเป็น HTML
+        msg.attach(MIMEText(html_content, 'html'))
 
         try:
             server = smtplib.SMTP(smtp_host, smtp_port)
@@ -109,7 +80,7 @@
             server.login(username, password)
             server.sendmail(from_addr, [to_addr], msg.as_string())
             server.quit()
-            print("Successfully sent professional email")
+            print("Successfully sent report")
         except Exception as e:
             print(f"Error: {e}")
             exit(1)
