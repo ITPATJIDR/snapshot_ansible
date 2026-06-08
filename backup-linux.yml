@@ -243,3 +243,9 @@
           - "Service Stopped: {{ 'Yes' if nginx_stopped is succeeded else 'Failed' }}"
           - "=========================================="
       when: nginx_installed
+    
+    - name: Pass Nginx version before to next job in AWX workflow
+      set_stats:
+        data:
+          nginx_version_before: "{{ nginx_version_info.stdout | default('Unknown') }}"
+      when: nginx_installed

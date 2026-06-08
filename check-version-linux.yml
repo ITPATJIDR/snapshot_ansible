@@ -26,3 +26,8 @@
     - name: Display nginx version
       debug:
         msg: "{{ nginx_version.stderr | default(nginx_version.stdout) }}"
+    
+    - name: Pass Nginx version after to next job in AWX workflow
+      set_stats:
+        data:
+          nginx_version_after: "{{ nginx_version.stderr | default(nginx_version.stdout) | default('Unknown') }}"

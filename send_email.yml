@@ -46,6 +46,14 @@
                   </td>
                 </tr>
                 <tr>
+                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Nginx Version (Before)</td>
+                  <td style="padding: 12px; border: 1px solid #dee2e6;">{{ nginx_version_before | default('N/A') }}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">Nginx Version (After)</td>
+                  <td style="padding: 12px; border: 1px solid #dee2e6;">{{ nginx_version_after | default('N/A') }}</td>
+                </tr>
+                <tr>
                   <td style="padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; font-weight: bold;">WSUS Server</td>
                   <td style="padding: 12px; border: 1px solid #dee2e6;">{{ wsus_server | default('Default') }}</td>
                 </tr>
