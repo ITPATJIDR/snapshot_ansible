@@ -18,16 +18,17 @@
       when: nginx_path.rc != 0
 
     - name: Get nginx version
-      command: nginx -v
+      shell: |
+        $(command -v nginx || echo "/usr/sbin/nginx") -v
       register: nginx_version
       changed_when: false
       failed_when: false
 
     - name: Display nginx version
       debug:
-        msg: "{{ nginx_version.stderr | default(nginx_version.stdout) }}"
+        msg: "{{ nginx_version.stderr | default(nginx_version.stdout | default('Unknown', true), true) }}"
     
     - name: Pass Nginx version after to next job in AWX workflow
       set_stats:
         data:
-          nginx_version_after: "{{ nginx_version.stderr | default(nginx_version.stdout) | default('Unknown') }}"
+          nginx_version_after: "{{ nginx_version.stderr | default(nginx_version.stdout | default('Unknown', true), true) }}"

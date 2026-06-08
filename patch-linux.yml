@@ -60,7 +60,7 @@
     
     - name: Get nginx version before patching
       shell: |
-        nginx -v 2>&1 | head -1
+        $(command -v nginx || echo "/usr/sbin/nginx") -v 2>&1 | head -1
       register: nginx_version_before
       ignore_errors: yes
       changed_when: false
@@ -212,7 +212,7 @@
       shell: |
         if rpm -q nginx &> /dev/null; then
             echo "INSTALLED:Yes"
-            nginx -v 2>&1 | head -1
+            $(command -v nginx || echo "/usr/sbin/nginx") -v 2>&1 | head -1
             rpm -qi nginx | grep -E "^Version|^Release|^Name" | head -3
         else
             echo "INSTALLED:No"
@@ -458,7 +458,7 @@
     
     - name: Get nginx version after patching
       shell: |
-        nginx -v 2>&1 | head -1
+        $(command -v nginx || echo "/usr/sbin/nginx") -v 2>&1 | head -1
       register: nginx_version_after
       ignore_errors: yes
       changed_when: false
@@ -471,13 +471,13 @@
         if [ -d /etc/nginx ]; then
             CONF_DIR="/etc/nginx"
         else
-            CONF_DIR=$(nginx -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1 | xargs dirname)
+            CONF_DIR=$($(command -v nginx || echo "/usr/sbin/nginx") -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1 | xargs dirname)
             CONF_DIR=${CONF_DIR:-/etc/nginx}
         fi
         DOC_ROOT=$(grep -rh "root " "$CONF_DIR"/*.conf "$CONF_DIR"/conf.d/*.conf 2>/dev/null | grep -v "^#" | awk '{print $2}' | sed 's/;//' | head -1)
         DOC_ROOT=${DOC_ROOT:-/usr/share/nginx/html}
         mkdir -p "$DOC_ROOT"
-        VERSION_STR="{{ nginx_version_after.stdout | default(nginx_version_before.stdout) | default('Unknown') }}"
+        VERSION_STR="{{ nginx_version_after.stdout | default(nginx_version_before.stdout | default('Unknown', true), true) }}"
         VERSION_NUM=$(echo "$VERSION_STR" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$VERSION_STR")
         echo "hello world $VERSION_NUM" > "$DOC_ROOT/index.html"
       when: 
@@ -509,8 +509,8 @@
           - "=========================================="
           - "Nginx Patching Summary"
           - "Host: {{ inventory_hostname }}"
-          - "Version Before: {{ nginx_version_before.stdout | default('Unknown') }}"
-          - "Version After: {{ nginx_version_after.stdout | default('Unknown') if (install_updates | default(false)) else 'N/A' }}"
+          - "Version Before: {{ nginx_version_before.stdout | default('Unknown', true) }}"
+          - "Version After: {{ nginx_version_after.stdout | default('Unknown', true) if (install_updates | default(false)) else 'N/A' }}"
           - "Updates Available: {{ 'Yes' if updates_available else 'No' }}"
           - "Updates Installed: {{ 'Yes' if (install_updates | default(false) and nginx_upgrade is succeeded) else 'No' }}"
           - "Service Status: {{ nginx_service_status_before.stdout | default('Unknown') }}"
@@ -525,8 +525,8 @@
           status: "{{ 'success' if (nginx_upgrade is succeeded or (not (install_updates | default(false) | bool))) else 'failed' }}"
           patch_date: "{{ patch_date }}"
           patch_time: "{{ patch_time }}"
-          version_before: "{{ nginx_version_before.stdout | default('Unknown') }}"
-          version_after: "{{ nginx_version_after.stdout | default(nginx_version_before.stdout | default('Unknown')) }}"
+          version_before: "{{ nginx_version_before.stdout | default('Unknown', true) }}"
+          version_after: "{{ nginx_version_after.stdout | default(nginx_version_before.stdout | default('Unknown', true), true) }}"
           service_status: "{{ nginx_service_status_before.stdout | default('Unknown') }}"
           updates_available: "{{ 'Yes' if updates_available else 'No' }}"
           updates_installed: "{{ 'Yes' if (install_updates | default(false) and nginx_upgrade is succeeded) else 'No' }}"
@@ -536,6 +536,6 @@
     - name: Pass Nginx versions to next job in AWX workflow
       set_stats:
         data:
-          nginx_version_before: "{{ nginx_version_before.stdout | default('Unknown') }}"
-          nginx_version_after: "{{ nginx_version_after.stdout | default(nginx_version_before.stdout | default('Unknown')) }}"
+          nginx_version_before: "{{ nginx_version_before.stdout | default('Unknown', true) }}"
+          nginx_version_after: "{{ nginx_version_after.stdout | default(nginx_version_before.stdout | default('Unknown', true), true) }}"
       when: nginx_installed

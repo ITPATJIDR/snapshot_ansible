@@ -113,7 +113,7 @@
     # Gather nginx information
     - name: Get nginx information
       shell: |
-        nginx -v 2>&1
+        $(command -v nginx || echo "/usr/sbin/nginx") -v 2>&1
       register: nginx_version_info
       ignore_errors: yes
       changed_when: false
@@ -131,7 +131,7 @@
         if [ -d /etc/nginx ]; then
             echo "/etc/nginx"
         else
-            CONF_FILE=$(nginx -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
+            CONF_FILE=$($(command -v nginx || echo "/usr/sbin/nginx") -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
             dirname "${CONF_FILE:-/etc/nginx/nginx.conf}"
         fi
       register: nginx_config_dir
@@ -140,7 +140,7 @@
     
     - name: Get nginx main configuration file
       shell: |
-        CONF_FILE=$(nginx -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
+        CONF_FILE=$($(command -v nginx || echo "/usr/sbin/nginx") -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
         echo "${CONF_FILE:-/etc/nginx/nginx.conf}"
       register: nginx_main_config
       changed_when: false
@@ -239,7 +239,7 @@
           - "=========================================="
           - "Nginx Backup Completed"
           - "Location: {{ backup_folder }}"
-          - "Version: {{ nginx_version_info.stdout | default('Unknown') }}"
+          - "Version: {{ nginx_version_info.stdout | default('Unknown', true) }}"
           - "Service Stopped: {{ 'Yes' if nginx_stopped is succeeded else 'Failed' }}"
           - "=========================================="
       when: nginx_installed
@@ -247,5 +247,5 @@
     - name: Pass Nginx version before to next job in AWX workflow
       set_stats:
         data:
-          nginx_version_before: "{{ nginx_version_info.stdout | default('Unknown') }}"
+          nginx_version_before: "{{ nginx_version_info.stdout | default('Unknown', true) }}"
       when: nginx_installed
