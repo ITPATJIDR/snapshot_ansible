@@ -131,14 +131,17 @@
         if [ -d /etc/nginx ]; then
             echo "/etc/nginx"
         else
-            nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | xargs dirname || echo "/etc/nginx"
+            CONF_FILE=$(nginx -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
+            dirname "${CONF_FILE:-/etc/nginx/nginx.conf}"
         fi
       register: nginx_config_dir
       changed_when: false
       when: nginx_installed
     
     - name: Get nginx main configuration file
-      shell: nginx -t 2>&1 | grep "configuration file" | awk '{print $NF}' | head -1 || echo "/etc/nginx/nginx.conf"
+      shell: |
+        CONF_FILE=$(nginx -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
+        echo "${CONF_FILE:-/etc/nginx/nginx.conf}"
       register: nginx_main_config
       changed_when: false
       when: nginx_installed
