@@ -257,5 +257,5 @@
     - name: Pass Nginx version before to next job in AWX workflow
       set_stats:
         data:
-          nginx_version_before: "{{ nginx_version_info.stdout | default('Unknown', true) }}"
+          nginx_version_before: "{{ (nginx_version_info | default({})).stdout | default('Unknown', true) }}"
       when: nginx_installed
