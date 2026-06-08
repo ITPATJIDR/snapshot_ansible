@@ -106,3 +106,24 @@
         - nginx_installed
         - service_action == "status"
 
+    - name: Get current nginx version for reporting
+      shell: |
+        NGINX_BIN=$(rpm -ql nginx 2>/dev/null | grep -E '/(s)?bin/nginx$' | head -1)
+        NGINX_BIN=${NGINX_BIN:-$(command -v nginx || echo "/usr/sbin/nginx")}
+        if [ -x "$NGINX_BIN" ]; then
+            "$NGINX_BIN" -v 2>&1
+        else
+            echo "Unknown"
+        fi
+      register: nginx_current_version
+      changed_when: false
+      ignore_errors: yes
+      when: nginx_installed
+
+    - name: Pass Nginx versions to next job in AWX workflow
+      set_stats:
+        data:
+          nginx_version_before: "{{ nginx_current_version.stdout | default('Unknown', true) }}"
+          nginx_version_after: "{{ nginx_current_version.stdout | default('Unknown', true) }}"
+      when: nginx_installed
+
