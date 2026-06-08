@@ -1,0 +1,18 @@
+---
+- name: Simple Windows Health Check
+  hosts: all
+  gather_facts: yes
+  vars:
+    disk_threshold_gb: 10
+
+  tasks:
+    - name: Get Computer Name and Windows OS
+      debug:
+        msg: "รันงานบนเครื่อง: {{ ansible_hostname }} (ระบบปฏิบัติการ: {{ ansible_os_family }})"
+
+    - name: Check Free Space on C Drive
+      win_shell: |
+        $drive = Get-PSDrive C
+        $freeGB = [math]::Round($drive.Free / 1GB, 2)
+        Write-Output "FREE_SPACE:$freeGB"
+      register: disk_info

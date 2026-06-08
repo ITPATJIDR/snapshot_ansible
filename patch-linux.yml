@@ -186,9 +186,17 @@
     - name: Install nginx from official repository
       shell: |
         if command -v dnf &> /dev/null; then
-            dnf install -y nginx
+            if [ -n "{{ nginx_version_target | default('') }}" ]; then
+                dnf install -y "nginx-{{ nginx_version_target }}*"
+            else
+                dnf install -y nginx
+            fi
         elif command -v yum &> /dev/null; then
-            yum install -y nginx
+            if [ -n "{{ nginx_version_target | default('') }}" ]; then
+                yum install -y "nginx-{{ nginx_version_target }}*"
+            else
+                yum install -y nginx
+            fi
         else
             echo "ERROR: No package manager found (dnf/yum)"
             exit 1
@@ -335,13 +343,13 @@
       shell: |
         if command -v dnf &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
-                dnf list available nginx-{{ nginx_version_target }} 2>/dev/null | grep -E "^nginx" || echo "TARGET_VERSION:NotAvailable"
+                dnf list available "nginx-{{ nginx_version_target }}*" 2>/dev/null | grep -E "^nginx" || echo "TARGET_VERSION:NotAvailable"
             else
                 dnf check-update nginx 2>/dev/null | grep -E "^nginx" || echo "UPDATES:None"
             fi
         elif command -v yum &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
-                yum list available nginx-{{ nginx_version_target }} 2>/dev/null | grep -E "^nginx" || echo "TARGET_VERSION:NotAvailable"
+                yum list available "nginx-{{ nginx_version_target }}*" 2>/dev/null | grep -E "^nginx" || echo "TARGET_VERSION:NotAvailable"
             else
                 yum check-update nginx 2>/dev/null | grep -E "^nginx" || echo "UPDATES:None"
             fi
@@ -401,13 +409,13 @@
       shell: |
         if command -v dnf &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
-                dnf upgrade -y "nginx-{{ nginx_version_target }}" || dnf upgrade -y nginx
+                dnf upgrade -y "nginx-{{ nginx_version_target }}*"
             else
                 dnf upgrade -y nginx
             fi
         elif command -v yum &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
-                yum upgrade -y "nginx-{{ nginx_version_target }}" || yum upgrade -y nginx
+                yum upgrade -y "nginx-{{ nginx_version_target }}*"
             else
                 yum upgrade -y nginx
             fi
@@ -427,13 +435,13 @@
       shell: |
         if command -v dnf &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
-                dnf upgrade -y "nginx-{{ nginx_version_target }}" || dnf upgrade -y nginx
+                dnf upgrade -y "nginx-{{ nginx_version_target }}*"
             else
                 dnf upgrade -y nginx
             fi
         elif command -v yum &> /dev/null; then
             if [ -n "{{ nginx_version_target | default('') }}" ]; then
-                yum upgrade -y "nginx-{{ nginx_version_target }}" || yum upgrade -y nginx
+                yum upgrade -y "nginx-{{ nginx_version_target }}*"
             else
                 yum upgrade -y nginx
             fi
