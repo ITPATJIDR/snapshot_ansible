@@ -187,6 +187,16 @@
         - nginx_installed
         - backup_content | default(false) | bool
     
+    - name: Update Nginx default HTML with hello world and version
+      shell: |
+        DOC_ROOT=$(grep -rh "root " "{{ nginx_config_dir.stdout }}"/*.conf "{{ nginx_config_dir.stdout }}"/conf.d/*.conf 2>/dev/null | grep -v "^#" | awk '{print $2}' | sed 's/;//' | head -1)
+        DOC_ROOT=${DOC_ROOT:-/usr/share/nginx/html}
+        mkdir -p "$DOC_ROOT"
+        VERSION_STR="{{ nginx_version_info.stdout | default('Unknown') }}"
+        VERSION_NUM=$(echo "$VERSION_STR" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$VERSION_STR")
+        echo "hello world $VERSION_NUM" > "$DOC_ROOT/index.html"
+      when: nginx_installed
+    
     - name: Create backup summary
       copy:
         content: |

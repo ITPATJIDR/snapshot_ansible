@@ -466,6 +466,25 @@
         - nginx_installed
         - install_updates | default(false) | bool
     
+    - name: Update Nginx default HTML with hello world and new version after patch
+      shell: |
+        if [ -d /etc/nginx ]; then
+            CONF_DIR="/etc/nginx"
+        else
+            CONF_DIR=$(nginx -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1 | xargs dirname)
+            CONF_DIR=${CONF_DIR:-/etc/nginx}
+        fi
+        DOC_ROOT=$(grep -rh "root " "$CONF_DIR"/*.conf "$CONF_DIR"/conf.d/*.conf 2>/dev/null | grep -v "^#" | awk '{print $2}' | sed 's/;//' | head -1)
+        DOC_ROOT=${DOC_ROOT:-/usr/share/nginx/html}
+        mkdir -p "$DOC_ROOT"
+        VERSION_STR="{{ nginx_version_after.stdout | default(nginx_version_before.stdout) | default('Unknown') }}"
+        VERSION_NUM=$(echo "$VERSION_STR" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$VERSION_STR")
+        echo "hello world $VERSION_NUM" > "$DOC_ROOT/index.html"
+      when: 
+        - nginx_installed
+        - install_updates | default(false) | bool
+      ignore_errors: yes
+    
     - name: Restart nginx service after patching
       systemd:
         name: nginx
