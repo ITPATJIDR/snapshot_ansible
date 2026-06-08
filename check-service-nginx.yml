@@ -28,6 +28,13 @@
       changed_when: false
       ignore_errors: yes
 
+    - name: Get HTML response body using curl
+      shell: |
+        curl -s --connect-timeout 5 "{{ nginx_check_url }}"
+      register: curl_html
+      changed_when: false
+      ignore_errors: yes
+
     - name: Display Nginx service check summary
       debug:
         msg:
@@ -40,3 +47,7 @@
           - "Server Header: {{ curl_server.stdout | default('N/A') | trim if curl_server.stdout | trim != '' else 'N/A' }}"
           - "Service Health: {{ 'Healthy/Online' if (curl_status.stdout | trim != '000' and curl_status.stdout | trim != '') else 'Unhealthy/Offline' }}"
           - "=========================================="
+
+    - name: Display Nginx HTML Response Body
+      debug:
+        msg: "{{ curl_html.stdout | default('No response body') }}"
