@@ -1,0 +1,42 @@
+---
+- name: Check Nginx Service Status via Curl
+  hosts: all
+  gather_facts: yes
+  vars:
+    nginx_check_url: "http://127.0.0.1"
+  tags:
+    - check-nginx-service
+
+  tasks:
+    - name: Get Nginx systemd service status
+      shell: systemctl is-active nginx 2>/dev/null || echo "inactive"
+      register: nginx_systemd_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Get HTTP status code using curl
+      shell: |
+        curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "{{ nginx_check_url }}"
+      register: curl_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Get HTTP Server header using curl
+      shell: |
+        curl -s -I --connect-timeout 5 "{{ nginx_check_url }}" | grep -i "^server:" | awk '{print $2}' | tr -d '\r\n'
+      register: curl_server
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display Nginx service check summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Nginx Service Check Summary via Curl"
+          - "Host: {{ inventory_hostname }}"
+          - "URL Checked: {{ nginx_check_url }}"
+          - "Systemd Status: {{ nginx_systemd_status.stdout | default('Unknown') | trim }}"
+          - "HTTP Status Code: {{ curl_status.stdout | default('000') | trim }}"
+          - "Server Header: {{ curl_server.stdout | default('N/A') | trim if curl_server.stdout | trim != '' else 'N/A' }}"
+          - "Service Health: {{ 'Healthy/Online' if (curl_status.stdout | trim != '000' and curl_status.stdout | trim != '') else 'Unhealthy/Offline' }}"
+          - "=========================================="
