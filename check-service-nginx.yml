@@ -8,6 +8,21 @@
     - check-nginx-service
 
   tasks:
+    - name: Change Nginx default port from 80 to 8080
+      replace:
+        path: /etc/nginx/conf.d/default.conf
+        regexp: 'listen\s+80;'
+        replace: 'listen       8080;'
+      register: port_change
+      ignore_errors: yes
+
+    - name: Restart Nginx if port changed
+      service:
+        name: nginx
+        state: restarted
+      when: port_change.changed | default(false)
+      ignore_errors: yes
+
     - name: Get Nginx systemd service status
       shell: systemctl is-active nginx 2>/dev/null || echo "inactive"
       register: nginx_systemd_status
