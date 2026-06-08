@@ -113,7 +113,7 @@
     # Gather nginx information
     - name: Get nginx information
       shell: |
-        $(command -v nginx || echo "/usr/sbin/nginx") -v 2>&1
+        if command -v nginx >/dev/null 2>&1; then nginx -v 2>&1; elif [ -x /usr/sbin/nginx ]; then /usr/sbin/nginx -v 2>&1; else echo "Unknown"; fi
       register: nginx_version_info
       ignore_errors: yes
       changed_when: false
@@ -131,7 +131,7 @@
         if [ -d /etc/nginx ]; then
             echo "/etc/nginx"
         else
-            CONF_FILE=$($(command -v nginx || echo "/usr/sbin/nginx") -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
+            CONF_FILE=$(if command -v nginx >/dev/null 2>&1; then nginx -t 2>&1; else /usr/sbin/nginx -t 2>&1; fi | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
             dirname "${CONF_FILE:-/etc/nginx/nginx.conf}"
         fi
       register: nginx_config_dir
@@ -140,7 +140,7 @@
     
     - name: Get nginx main configuration file
       shell: |
-        CONF_FILE=$($(command -v nginx || echo "/usr/sbin/nginx") -t 2>&1 | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
+        CONF_FILE=$(if command -v nginx >/dev/null 2>&1; then nginx -t 2>&1; else /usr/sbin/nginx -t 2>&1; fi | grep -o "configuration file [^ ]*" | cut -d' ' -f3 | head -1)
         echo "${CONF_FILE:-/etc/nginx/nginx.conf}"
       register: nginx_main_config
       changed_when: false
