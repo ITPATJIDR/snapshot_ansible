@@ -19,7 +19,13 @@
 
     - name: Get nginx version
       shell: |
-        if command -v nginx >/dev/null 2>&1; then nginx -v 2>&1; elif [ -x /usr/sbin/nginx ]; then /usr/sbin/nginx -v 2>&1; else echo "Unknown"; fi
+        NGINX_BIN=$(rpm -ql nginx 2>/dev/null | grep -E '/(s)?bin/nginx$' | head -1)
+        NGINX_BIN=${NGINX_BIN:-$(command -v nginx || echo "/usr/sbin/nginx")}
+        if [ -x "$NGINX_BIN" ]; then
+            "$NGINX_BIN" -v 2>&1
+        else
+            echo "Unknown"
+        fi
       register: nginx_version
       changed_when: false
       failed_when: false
