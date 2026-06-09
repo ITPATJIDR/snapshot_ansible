@@ -6,6 +6,7 @@
   # backup_content: true/false (default: false - backup website content)
   # nginx_version: "1.20.1" (optional - install specific version)
   # use_nginx_official_repo: true/false (default: false - use official repo)
+  # test_fail: true/false (default: false - force fail for testing error handling)
   tags: 
     - backup-nginx
 
@@ -21,17 +22,20 @@
         name: nginx
         state: stopped
       ignore_errors: yes
+      when: not (test_fail | default(false) | bool)
     
     - name: Remove existing nginx
       shell: |
         PKG_MGR=$(command -v dnf || command -v yum)
         $PKG_MGR remove -y nginx || true
       ignore_errors: yes
+      when: not (test_fail | default(false) | bool)
     
     - name: Clean up nginx configuration files (optional)
       shell: |
         rm -rf /etc/nginx /etc/yum.repos.d/nginx.repo 2>/dev/null || true
       ignore_errors: yes
+      when: not (test_fail | default(false) | bool)
     
     - name: Check if nginx is installed
       shell: rpm -q nginx &> /dev/null && echo "true" || echo "false"
@@ -108,7 +112,9 @@
           msg: "Failed to install nginx"
         when: not (nginx_installed | bool)
       
-      when: not (nginx_installed | bool)
+      when: 
+        - not (nginx_installed | bool)
+        - not (test_fail | default(false) | bool)
     
     # Gather nginx information
     - name: Get nginx information
@@ -259,3 +265,8 @@
         data:
           nginx_version_before: "{{ (nginx_version_info | default({})).stdout | default('Unknown', true) }}"
       when: nginx_installed
+
+    - name: Force fail for testing
+      fail:
+        msg: "This is a test failure to verify error handling"
+      when: test_fail | default(false) | bool
