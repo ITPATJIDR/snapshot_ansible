@@ -265,8 +265,3 @@
         data:
           nginx_version_before: "{{ (nginx_version_info | default({})).stdout | default('Unknown', true) }}"
       when: nginx_installed
-
-    - name: Force fail for testing
-      fail:
-        msg: "This is a test failure to verify error handling"
-      when: test_fail | default(false) | bool
