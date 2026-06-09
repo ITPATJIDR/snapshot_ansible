@@ -37,27 +37,27 @@
       fail:
         msg: "This is a test failure to verify error handling"
       when: test_fail | default(false) | bool
-    
+
     - name: Get formatted date and time
       set_fact:
         patch_date: "{{ ansible_date_time.date.split('-') | reverse | join('/') }}"
         patch_time: "{{ ansible_date_time.time }}"
-    
+
     - name: Check if nginx is installed
       shell: rpm -q nginx
       register: nginx_check
       ignore_errors: yes
       changed_when: false
-    
+
     - name: Set nginx installation status
       set_fact:
         nginx_installed: "{{ nginx_check.rc == 0 }}"
-    
+
     - name: Fail if nginx is not installed
       fail:
         msg: "Nginx is not installed on this host. Please install nginx before running patch."
       when: not nginx_installed
-    
+
     - name: Get nginx version before patching
       shell: |
         NGINX_BIN=$(rpm -ql nginx 2>/dev/null | grep -E '/(s)?bin/nginx$' | head -1)
@@ -71,19 +71,19 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Get nginx service status before patching
       shell: systemctl is-active nginx 2>/dev/null || echo "inactive"
       register: nginx_service_status_before
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Check if using official NGINX repository
       set_fact:
         use_official_repo: "{{ use_nginx_official_repo | default(false) | bool }}"
       when: nginx_installed
-    
+
     - name: Disable and reset nginx module stream (Oracle Linux 8+)
       shell: |
         if command -v dnf &> /dev/null; then
@@ -91,11 +91,11 @@
             dnf module reset -y nginx 2>/dev/null || true
         fi
       register: disable_nginx_module
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
       ignore_errors: yes
-    
+
     - name: Remove old nginx package if switching to official repo
       shell: |
         if command -v dnf &> /dev/null; then
@@ -104,20 +104,20 @@
             yum remove -y nginx || true
         fi
       register: remove_old_nginx
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
       ignore_errors: yes
-    
+
     - name: Remove existing broken nginx repository files
       shell: |
         rm -f /etc/yum.repos.d/nginx*.repo 2>/dev/null || true
       register: remove_old_repo
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
       ignore_errors: yes
-    
+
     - name: Detect OS release version (major version only)
       shell: |
         if [ -f /etc/oracle-release ]; then
@@ -135,20 +135,20 @@
       register: os_release_version
       ignore_errors: yes
       changed_when: false
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
-    
+
     - name: Detect system architecture
       shell: |
         uname -m
       register: system_arch
       ignore_errors: yes
       changed_when: false
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
-    
+
     - name: Create official NGINX repository file
       copy:
         content: |
@@ -160,22 +160,22 @@
           gpgkey=https://nginx.org/keys/nginx_signing.key
           module_hotfixes=true
         dest: /etc/yum.repos.d/nginx.repo
-        mode: '0644'
+        mode: "0644"
       register: nginx_repo_created
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
       ignore_errors: yes
-    
+
     - name: Import NGINX GPG key
       shell: |
         rpm --import https://nginx.org/keys/nginx_signing.key || true
       register: nginx_gpg_import
       ignore_errors: yes
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
-    
+
     - name: Update package cache after adding NGINX repo
       shell: |
         if command -v dnf &> /dev/null; then
@@ -185,10 +185,10 @@
         fi
       register: update_cache_after_repo
       ignore_errors: yes
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
-    
+
     - name: Install nginx from official repository
       shell: |
         if command -v dnf &> /dev/null; then
@@ -208,12 +208,12 @@
             exit 1
         fi
       register: nginx_install_from_official
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
         - remove_old_nginx is defined
       ignore_errors: yes
-    
+
     - name: Verify nginx installation from official repo
       shell: |
         if rpm -q nginx &> /dev/null; then
@@ -232,11 +232,11 @@
       register: nginx_verify_official
       ignore_errors: yes
       changed_when: false
-      when: 
+      when:
         - nginx_installed
         - use_official_repo
         - nginx_install_from_official is defined
-    
+
     - name: Update package cache
       shell: |
         if command -v dnf &> /dev/null; then
@@ -246,10 +246,10 @@
         fi
       register: update_cache
       ignore_errors: yes
-      when: 
+      when:
         - nginx_installed
         - not use_official_repo
-    
+
     - name: Get current installed nginx package version
       shell: |
         rpm -q nginx
@@ -257,7 +257,7 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Get current installed nginx version (parsed)
       shell: |
         rpm -q --queryformat '%{VERSION}-%{RELEASE}' nginx 2>/dev/null || echo "Unknown"
@@ -265,7 +265,7 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Check current nginx module stream (Oracle Linux 8+)
       shell: |
         if command -v dnf &> /dev/null; then
@@ -277,7 +277,7 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Determine target nginx stream from version
       set_fact:
         nginx_target_stream: >-
@@ -299,11 +299,11 @@
           {%- else -%}
             {{ nginx_current_stream.stdout | default('NoModuleStream') }}
           {%- endif -%}
-      when: 
+      when:
         - nginx_installed
         - nginx_version_target is defined
         - nginx_version_target != ''
-    
+
     - name: Check if stream switching is needed
       set_fact:
         stream_switch_needed: >-
@@ -314,43 +314,43 @@
           {%- else -%}
             false
           {%- endif -%}
-      when: 
+      when:
         - nginx_installed
         - nginx_target_stream is defined
-    
+
     - name: Reset nginx module stream
       shell: |
         dnf module reset -y nginx
       register: nginx_module_reset
       ignore_errors: yes
-      when: 
+      when:
         - nginx_installed
         - stream_switch_needed | default(false) | bool
         - not use_official_repo
-    
+
     - name: Enable target nginx module stream
       shell: |
         dnf module enable -y nginx:{{ nginx_target_stream }}
       register: nginx_module_enable
       ignore_errors: yes
-      when: 
+      when:
         - nginx_installed
         - stream_switch_needed | default(false) | bool
         - not use_official_repo
         - nginx_module_reset is succeeded
-    
+
     - name: Verify stream switch
       shell: |
         dnf module list nginx 2>/dev/null | grep -E "^nginx" | grep "\[e\]" | awk '{print $2}' | head -1 || echo "NoModuleStream"
       register: nginx_stream_after_switch
       ignore_errors: yes
       changed_when: false
-      when: 
+      when:
         - nginx_installed
         - stream_switch_needed | default(false) | bool
         - not use_official_repo
         - nginx_module_enable is defined
-    
+
     - name: Check for available nginx updates
       shell: |
         if command -v dnf &> /dev/null; then
@@ -370,7 +370,7 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Get available nginx package versions
       shell: |
         if command -v dnf &> /dev/null; then
@@ -384,7 +384,7 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Get latest available nginx version
       shell: |
         if command -v dnf &> /dev/null; then
@@ -398,7 +398,7 @@
       ignore_errors: yes
       changed_when: false
       when: nginx_installed
-    
+
     - name: Determine if updates are available
       set_fact:
         updates_available: >-
@@ -416,7 +416,7 @@
             false
           {%- endif -%}
       when: nginx_installed
-    
+
     - name: Install nginx updates (from default repo)
       shell: |
         if command -v dnf &> /dev/null; then
@@ -436,13 +436,13 @@
             exit 1
         fi
       register: nginx_upgrade
-      when: 
+      when:
         - nginx_installed
         - install_updates | default(false) | bool
         - not use_official_repo
         - (updates_available or (stream_switch_needed | default(false)))
       ignore_errors: yes
-    
+
     - name: Install nginx updates (from official repo)
       shell: |
         if command -v dnf &> /dev/null; then
@@ -462,12 +462,12 @@
             exit 1
         fi
       register: nginx_upgrade
-      when: 
+      when:
         - nginx_installed
         - install_updates | default(false) | bool
         - use_official_repo
       ignore_errors: yes
-    
+
     - name: Get nginx version after patching
       shell: |
         NGINX_BIN=$(rpm -ql nginx 2>/dev/null | grep -E '/(s)?bin/nginx$' | head -1)
@@ -480,30 +480,9 @@
       register: nginx_version_after_chk
       ignore_errors: yes
       changed_when: false
-      when: 
+      when:
         - nginx_installed
         - install_updates | default(false) | bool
-    
-    - name: Restore Nginx configuration and migrate port to 8888
-      shell: |
-        # 1. Restore from backup if available
-        BACKUP_ROOT="{{ backup_path | default('/opt/nginx_backups') }}"
-        LATEST_BACKUP=$(ls -td "$BACKUP_ROOT"/nginx_backup_* 2>/dev/null | head -1)
-        if [ -n "$LATEST_BACKUP" ] && [ -d "$LATEST_BACKUP/etc_nginx" ]; then
-            echo "Restoring configuration from $LATEST_BACKUP"
-            mv /etc/nginx /etc/nginx.bak.$(date +%F_%T) || true
-            cp -r "$LATEST_BACKUP/etc_nginx" /etc/nginx
-        else
-            echo "No backup folder found to restore, configuring default to port 8888"
-        fi
-
-        # 2. Ensure all conf files listen on port 8888 instead of 80 (to prevent port 80 conflicts)
-        if [ -d /etc/nginx ]; then
-            find /etc/nginx -type f \( -name "*.conf" -o -name "nginx.conf" \) | xargs sed -i 's/listen\s\+80;/listen 8888;/g' 2>/dev/null || true
-            find /etc/nginx -type f \( -name "*.conf" -o -name "nginx.conf" \) | xargs sed -i 's/listen\s\+\[::\]:80;/listen [::]:8888;/g' 2>/dev/null || true
-        fi
-      when: nginx_installed
-      ignore_errors: yes
 
     - name: Update Nginx default HTML with hello world and new version after patch
       shell: |
@@ -521,29 +500,29 @@
         VERSION_STR="{{ (nginx_version_after_chk | default({})).stdout | default(nginx_version_before | default((nginx_version_before_chk | default({})).stdout | default('Unknown', true), true), true) }}"
         VERSION_NUM=$(echo "$VERSION_STR" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$VERSION_STR")
         echo "hello world $VERSION_NUM" > "$DOC_ROOT/index.html"
-      when: 
+      when:
         - nginx_installed
         - install_updates | default(false) | bool
       ignore_errors: yes
-    
+
     - name: Restart nginx service after patching
       systemd:
         name: nginx
         state: restarted
-      when: 
+      when:
         - nginx_installed
         - install_updates | default(false) | bool
         - nginx_upgrade is succeeded
       ignore_errors: yes
       register: nginx_restarted
-    
+
     - name: Display service restart status
       debug:
         msg: "Nginx service restarted: {{ 'Yes' if nginx_restarted is succeeded else 'Failed/Skipped' }}"
-      when: 
+      when:
         - nginx_installed
         - install_updates | default(false) | bool
-    
+
     - name: Display patching summary
       debug:
         msg:
@@ -557,7 +536,7 @@
           - "Service Status: {{ nginx_service_status_before.stdout | default('Unknown') }}"
           - "=========================================="
       when: nginx_installed
-    
+
     - name: Store patch result for reporting
       set_fact:
         patch_result:
@@ -573,7 +552,7 @@
           updates_installed: "{{ 'Yes' if (install_updates | default(false) and nginx_upgrade is succeeded) else 'No' }}"
           reboot_required: false
       when: nginx_installed
-    
+
     - name: Pass Nginx versions to next job in AWX workflow
       set_stats:
         data:

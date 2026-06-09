@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: yes
   vars:
-    nginx_check_url: "http://192.168.1.220:8888"
+    nginx_check_url: "http://192.168.1.220:80"
   tags:
     - check-nginx-service
 
